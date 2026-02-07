@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import Icons from './Icons';
+import { HexColorPicker } from "react-colorful"; // Lightweight color picker
 
 export const COLORS = [
   { name: 'Siren Red', hex: '#ef4444' }, 
@@ -16,41 +17,81 @@ export const COLORS = [
 
 export const ColorPicker = ({ selected, onChange }: { selected: any, onChange: (c: any) => void }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
+
+  // Helper to handle custom hex changes
+  const handleCustomChange = (newHex: string) => {
+    onChange({ name: 'Custom', hex: newHex });
+  };
 
   return (
-    <div className="fixed right-6 bottom-40 z-50 flex items-center flex-row-reverse gap-3">
-      {/* Trigger Button */}
-      <button 
-        onClick={() => setIsOpen(!isOpen)}
-        className={`w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-transform active:scale-90 border-4 border-white/20 backdrop-blur-sm ${isOpen ? 'scale-110 ring-4 ring-white/10' : ''}`}
-        style={{ backgroundColor: selected.hex }}
-      >
-        {!isOpen && <div className="absolute inset-0 rounded-full border border-black/10" />}
-        {isOpen && <Icons.X />}
-      </button>
-
-      {/* Expandable List */}
-      <div 
-        className={`flex items-center gap-2 pr-2 overflow-hidden transition-all duration-300 ease-out origin-right ${
-          isOpen ? 'w-auto opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-10 pointer-events-none'
-        }`}
-      >
-        <div className="flex gap-2 bg-black/60 backdrop-blur-xl p-2 rounded-full border border-white/10">
-          {COLORS.map(c => (
-            <button 
-              key={c.hex} 
-              onClick={() => { onChange(c); setIsOpen(false); }}
-              className={`w-10 h-10 rounded-full border-2 transition-transform hover:scale-110 active:scale-95 shrink-0 ${
-                selected.hex === c.hex ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-80 hover:opacity-100'
-              }`}
-              style={{ backgroundColor: c.hex }}
+    <div className="fixed right-6 bottom-40 z-[10001] flex items-end flex-col gap-3">
+      {/* 1. Custom Picker Popover (Only shows when custom mode is on and menu is open) */}
+      {isOpen && showCustom && (
+        <div className="bg-black/80 backdrop-blur-xl p-4 rounded-2xl border border-white/20 shadow-2xl mb-2 animate-in fade-in zoom-in duration-200 origin-bottom">
+          <HexColorPicker color={selected.hex} onChange={handleCustomChange} />
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-white/50 text-xs font-mono uppercase">HEX</span>
+            <input 
+              type="text"
+              value={selected.hex}
+              onChange={(e) => handleCustomChange(e.target.value)}
+              className="bg-white/10 border border-white/20 rounded px-2 py-1 text-white text-sm font-mono w-full focus:outline-none focus:ring-1 focus:ring-white/50"
             />
-          ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center flex-row-reverse gap-3">
+        {/* 2. Main Trigger Button */}
+        <button 
+          onClick={() => {
+            setIsOpen(!isOpen);
+            if (isOpen) setShowCustom(false);
+          }}
+          className={`w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-transform active:scale-90 border-4 border-white/20 backdrop-blur-sm ${isOpen ? 'scale-110' : ''}`}
+          style={{ backgroundColor: selected.hex }}
+        >
+          {isOpen ? <span className="text-white text-xl">✕</span> : null}
+        </button>
+
+        {/* 3. Expandable Presets List */}
+        <div 
+          className={`flex items-center gap-2 pr-2 transition-all duration-300 ease-out origin-right ${
+            isOpen ? 'w-auto opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-10 pointer-events-none'
+          }`}
+        >
+          <div className="flex gap-2 bg-black/60 backdrop-blur-xl p-2 rounded-full border border-white/10 max-w-[70vw] overflow-x-auto no-scrollbar">
+            {/* Preset Colors */}
+            {COLORS.map(c => (
+              <button 
+                key={c.hex} 
+                onClick={() => { 
+                  onChange(c); 
+                  setShowCustom(false); 
+                }}
+                className={`w-10 h-10 rounded-full border-2 transition-transform shrink-0 ${
+                  selected.hex === c.hex && !showCustom ? 'border-white scale-110' : 'border-transparent opacity-80'
+                }`}
+                style={{ backgroundColor: c.hex }}
+              />
+            ))}
+
+            {/* 4. Custom Color Toggle Button */}
+            <button 
+              onClick={() => setShowCustom(!showCustom)}
+              className={`w-10 h-10 rounded-full border-2 flex items-center justify-center bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 transition-transform shrink-0 ${
+                showCustom ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-80'
+              }`}
+            >
+              <span className="text-white text-[10px] font-bold">HEX</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
 export const WelcomeScreen = ({ onStart }: { onStart: () => void }) => (
   <div className="fixed inset-0 bg-black flex flex-col items-center justify-center p-8 z-[100] text-center">

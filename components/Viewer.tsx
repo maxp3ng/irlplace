@@ -276,9 +276,11 @@ export default function Viewer() {
           </button>
         </div>
         
-        <div 
+        <div
+          id="color picker" 
           className="absolute bottom-12 left-0 right-0 flex justify-center pointer-events-auto"
           onPointerDown={(e) => { e.stopPropagation(); isInteractingWithUI.current = true; }}
+          onKeyDown={(e) => {e.stopPropagation();}}
         >
           <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
         </div>
