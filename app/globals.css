@@ -1,26 +1,35 @@
 @import "tailwindcss";
 
-/* 1. Default state */
-#ar-overlay {
-  display: none;
+/* 1. Reset for iOS WebXR Viewer "Punch-Through" 
+   Mozilla's viewer needs the background to be transparent 
+   to see the camera feed. 
+*/
+:root, body {
+  background-color: transparent !important;
+  margin: 0;
+  overflow: hidden;
 }
 
-/* 2. AR State - The Fix
-   We use a manual data-attribute because Tailwind v4 
-   cannot validate the experimental :xr-overlay pseudo-class yet.
+/* 2. The AR Overlay Root
+   We avoid using 'display: none' here because ARButton will 
+   control that property directly in the DOM. 
 */
-[data-xr-active="true"]#ar-overlay {
-  display: block !important;
-  position: fixed;
+#ar-overlay {
+  /* Layout instructions for when the button makes it visible */
+  position: absolute;
   inset: 0;
   width: 100vw;
   height: 100vh;
   z-index: 9999;
   pointer-events: none;
-  background: transparent;
+  background: transparent !important;
+  
+  /* Critical for iOS: Ensure the UI doesn't clip */
+  overflow: visible;
+  -webkit-tap-highlight-color: transparent;
 }
 
-/* 3. Utilities */
+/* 3. Standard Utilities */
 .pointer-events-auto {
   pointer-events: auto !important;
 }
@@ -28,9 +37,11 @@
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.05);
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2);
   border-radius: 10px;
