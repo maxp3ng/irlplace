@@ -108,6 +108,13 @@ export default function Viewer({ session }: { session: any }) {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
+  // --- ANONYMOUS SIGN-IN ---
+  const signInAnonymously = async () => {
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) console.error(error);
+    else setSession(data.session);
+  };
+
   const requestCompass = async () => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
       const heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
@@ -202,17 +209,8 @@ export default function Viewer({ session }: { session: any }) {
       return () => { supabase.removeChannel(channel); };
     };
     loadAndListen();
-  }, [position.lat, !!session]);
-
-  return (
-    <>
-      <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]" onPointerDown={() => { isInteractingWithUIRef.current = true; }} onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}>
-        <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
-          <button onClick={requestCompass} className={`px-4 py-2 rounded-full text-[10px] font-bold border ${aligned ? "bg-green-500/20 text-green-400" : "bg-white text-black"}`}>
-            {aligned ? "NORTH LOCKED" : "ALIGN COMPASS"}
-          </button>
-        </div>
-        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
+  }, [position.lat, session]);
+       <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
           ) : (
