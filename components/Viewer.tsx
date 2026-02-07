@@ -129,15 +129,15 @@ export default function Viewer({ session }: { session: any }) {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // --- AR ENGINE EFFECT ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
 
     const renderer = new THREE.WebGLRenderer({ 
       antialias: true, 
-      alpha: true,
+      alpha: true, 
       preserveDrawingBuffer: true 
     });
+    renderer.setClearColor(0x000000, 0); // Essential for iOS camera feed
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
@@ -160,16 +160,6 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(controller);
 
     const overlay = document.getElementById('ar-overlay');
-    
-    // START FIX: Attribute toggling for Tailwind v4 Build Safety
-    const onSessionStart = () => overlay?.setAttribute('data-xr-active', 'true');
-    const onSessionEnd = () => overlay?.removeAttribute('data-xr-active');
-    
-    renderer.xr.addEventListener('sessionstart', onSessionStart);
-    renderer.xr.addEventListener('sessionend', onSessionEnd);
-
-    const handleTouch = (e: TouchEvent) => { if (!isInteractingWithUIRef.current) triggerDrafting(); };
-    overlay?.addEventListener('touchstart', handleTouch);
 
     renderer.setAnimationLoop(() => {
       if (!isDraftingRef.current && geoConstants && originGps.current) {
@@ -184,6 +174,7 @@ export default function Viewer({ session }: { session: any }) {
       renderer.render(sceneRef.current, camera);
     });
 
+    // Provide the overlay root to ARButton to sync with its internal display toggling
     const button = ARButton.createButton(renderer, { 
       requiredFeatures: ['local-floor'], 
       optionalFeatures: ['dom-overlay'], 
@@ -192,9 +183,6 @@ export default function Viewer({ session }: { session: any }) {
     document.body.appendChild(button);
 
     return () => {
-      overlay?.removeEventListener('touchstart', handleTouch);
-      renderer.xr.removeEventListener('sessionstart', onSessionStart);
-      renderer.xr.removeEventListener('sessionend', onSessionEnd);
       sceneRef.current.remove(ghost, light, controller);
       renderer.setAnimationLoop(null);
       renderer.dispose();
@@ -226,21 +214,23 @@ export default function Viewer({ session }: { session: any }) {
   }, [position.lat, !!session]);
 
   const blockUI = () => { isInteractingWithUIRef.current = true; };
-  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 120); };
+  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 200); };
 
   return (
     <>
-      <div id="ar-overlay" className="pointer-events-none">
+      {/* 1. UI LAYER (Matches display logic in ARButton.js) */}
+      <div id="ar-overlay" style={{ display: 'none' }} className="pointer-events-none">
         <div className="relative w-full h-full pointer-events-none">
           <div 
-            className="pointer-events-auto"
+            className="absolute top-8 left-8 pointer-events-auto"
             onPointerDown={blockUI} onPointerUp={unblockUI}
             onTouchStart={blockUI} onTouchEnd={unblockUI}
           >
             <MainMenu session={session} rendererRef={rendererRef} />
           </div>
+
           <div 
-            className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto"
+            className="absolute inset-x-0 bottom-24 flex flex-col items-center gap-8 pointer-events-auto"
             onPointerDown={blockUI} onPointerUp={unblockUI}
             onTouchStart={blockUI} onTouchEnd={unblockUI}
           >
@@ -252,7 +242,9 @@ export default function Viewer({ session }: { session: any }) {
           </div>
         </div>
       </div>
-      <div ref={mountRef} className="fixed inset-0" />
+
+      {/* 2. CANVAS LAYER */}
+      <div ref={mountRef} className="fixed inset-0 z-0" />
     </>
   );
 }
