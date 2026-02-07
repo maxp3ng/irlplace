@@ -12,18 +12,22 @@ export default function Viewer() {
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   
-  // FIXED ORIGIN: This prevents the "sliding" effect
-  const originGps = useRef<{lat: number, lng: number} | null>(null);
-  const latestPos = useRef({ lat: 0, lng: 0 });
+  // FIXED ORIGIN: Captures lat, lng, AND alt at the start of the session
+  const originGps = useRef<{lat: number, lng: number, alt: number} | null>(null);
+  const latestPos = useRef({ lat: 0, lng: 0, alt: 0 });
 
   const [voxels, setVoxels] = useState<Voxel[]>([]);
-  const [position, setPosition] = useState({ lat: 0, lng: 0 });
+  const [position, setPosition] = useState({ lat: 0, lng: 0, alt: 0 });
 
-  // 1. GPS WATCHER
+  // 1. GPS & ALTITUDE WATCHER
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        const coords = { 
+          lat: pos.coords.latitude, 
+          lng: pos.coords.longitude, 
+          alt: pos.coords.altitude || 0 // Default to 0 if altitude is unavailable
+        };
         setPosition(coords);
         latestPos.current = coords;
       },
@@ -60,7 +64,6 @@ export default function Viewer() {
     const tempMatrix = new THREE.Matrix4();
     scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
 
-    // COMPASS ALIGNMENT: Attempt to align 3D Z-axis with North
     window.addEventListener('deviceorientationabsolute', (event) => {
       if (event.alpha !== null && !scene.userData.aligned) {
         scene.rotation.y = THREE.MathUtils.degToRad(event.alpha);
@@ -86,12 +89,16 @@ export default function Viewer() {
         const latScale = 111111;
         const lonScale = 111111 * Math.cos(originGps.current.lat * Math.PI / 180);
         
-        // Calculate GPS based on distance from the FIXED origin
         const newLat = originGps.current.lat - (worldPos.z / latScale);
         const newLon = originGps.current.lng + (worldPos.x / lonScale);
+        
+        // Save the Absolute Altitude: Current GPS Altitude + AR local Y offset
+        const newAlt = originGps.current.alt + worldPos.y;
 
         await supabase.from('voxels').insert([{
-          lat: newLat, lon: newLon, alt: worldPos.y,
+          lat: newLat, 
+          lon: newLon, 
+          alt: newAlt,
           color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString()
         }]);
       }
@@ -109,12 +116,11 @@ export default function Viewer() {
     return () => { renderer.dispose(); button.remove(); };
   }, []);
 
-  // 4. VOXEL SYNC (STABLE POSITIONING)
+  // 4. VOXEL SYNC
   useEffect(() => {
     const scene = sceneRef.current;
     if (position.lat === 0) return;
 
-    // First valid GPS becomes the anchor for this session
     if (!originGps.current) {
       originGps.current = { ...position };
     }
@@ -125,13 +131,15 @@ export default function Viewer() {
       let mesh = voxelsMap.current.get(voxel.id);
       
       if (!mesh) {
-        // Calculate position ONCE relative to the ORIGIN
         const z = -(voxel.lat - originGps.current!.lat) * 111111;
         const x = (voxel.lon - originGps.current!.lng) * (111111 * Math.cos(originGps.current!.lat * Math.PI / 180));
+        
+        // Vertical Y = Voxel Absolute Altitude - Session Origin Altitude
+        const y = voxel.alt - originGps.current!.alt;
 
         mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({ color: voxel.color }));
         mesh.userData.dbId = voxel.id;
-        mesh.position.set(x, voxel.alt, z);
+        mesh.position.set(x, y, z);
         
         scene.add(mesh);
         voxelsMap.current.set(voxel.id, mesh);
@@ -148,9 +156,7 @@ export default function Viewer() {
   }, [voxels, position]);
 
   const handleRecenter = () => {
-    // Reset origin to current GPS to fix drift
     originGps.current = { ...latestPos.current };
-    // Clear and re-sync all meshes
     voxelsMap.current.forEach((mesh) => sceneRef.current.remove(mesh));
     voxelsMap.current.clear();
   };
@@ -159,7 +165,9 @@ export default function Viewer() {
     <>
       <div className="fixed top-4 left-4 z-50 flex flex-col gap-2">
         <div className="bg-black/60 p-2 text-white text-[10px] rounded backdrop-blur-md border border-white/10">
-          GPS: {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
+          LAT: {position.lat.toFixed(6)}<br/>
+          LNG: {position.lng.toFixed(6)}<br/>
+          ALT: {position.alt.toFixed(2)}m
         </div>
         <button 
           onClick={handleRecenter}
