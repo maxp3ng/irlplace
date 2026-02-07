@@ -13,48 +13,54 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   const [activeTab, setActiveTab] = useState<'leaderboard' | 'gallery' | 'settings'>('leaderboard');
   const [leaderboard, setLeaderboard] = useState<{ user_id: string, blocks: number, display_name?: string }[]>([]);
   const [gallery, setGallery] = useState<{ id: string, image_url: string, user_id: string }[]>([]);
-  const [displayName, setDisplayName] = useState<string>(session?.user?.user_metadata?.display_name || '');
+  const [displayName, setDisplayName] = useState(session?.user?.user_metadata?.display_name || '');
   const [capturing, setCapturing] = useState(false);
+
+  const userId = session?.user?.id;
 
   // --- Leaderboard ---
   useEffect(() => {
+    if (!userId) return;
+
     const fetchLeaderboard = async () => {
       const { data: voxels } = await supabase.from('voxels').select('user_id');
       if (!voxels) return;
 
       const counts: Record<string, number> = {};
-      voxels.forEach(v => counts[v.user_id] = (counts[v.user_id] || 0) + 1);
+      voxels.forEach((v: any) => counts[v.user_id] = (counts[v.user_id] || 0) + 1);
 
       const lb = Object.entries(counts)
-        .map(([user_id, blocks]) => ({ user_id, blocks }))
+        .map(([uid, blocks]) => ({ user_id: uid, blocks }))
         .sort((a, b) => b.blocks - a.blocks);
 
-      // Fetch display names
-      const userIds = lb.map(l => l.user_id);
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, display_name')
-        .in('id', userIds);
+      const ids = lb.map(l => l.user_id);
+      const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', ids);
 
       const profileMap: Record<string, string> = {};
       profiles?.forEach(p => profileMap[p.id] = p.display_name || '');
+
       setLeaderboard(lb.map(l => ({ ...l, display_name: profileMap[l.user_id] || '' })));
     };
+
     fetchLeaderboard();
-  }, []);
+  }, [userId]);
 
   // --- Gallery ---
   useEffect(() => {
+    if (!userId) return;
+
     const fetchGallery = async () => {
-      const { data } = await supabase.from('gallery').select('*').order('created_at', { ascending: false });
+      const { data } = await supabase.from('gallery')
+        .select('*')
+        .order('created_at', { ascending: false });
       if (data) setGallery(data);
     };
-    fetchGallery();
-  }, []);
 
-  // --- Capture Screenshot ---
+    fetchGallery();
+  }, [userId]);
+
   const captureScreenshot = async () => {
-    if (!rendererRef.current || !session?.user?.id) return;
+    if (!rendererRef.current || !userId) return;
     setCapturing(true);
 
     const overlay = document.getElementById('ar-overlay');
@@ -63,36 +69,34 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
     requestAnimationFrame(async () => {
       try {
         const canvas = rendererRef.current!.domElement;
-        const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve));
+        const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve));
         if (!blob) return;
 
-        const userId = session.user.id;
+        // Use user-specific path for RLS compliance
         const path = `${userId}/screenshot-${Date.now()}.png`;
 
-        // --- Upload to Storage ---
         const { error: uploadError } = await supabase.storage
           .from('gallery')
           .upload(path, blob, { upsert: true });
+
         if (uploadError) {
-          console.error('Storage upload error:', uploadError);
+          console.error('Storage upload error:', uploadError.message);
           return;
         }
 
-        // --- Get Public URL ---
         const { data: publicData } = supabase.storage.from('gallery').getPublicUrl(path);
-        const publicUrl = publicData.publicUrl;
+        if (!publicData?.publicUrl) return;
 
-        // --- Insert row into gallery table (must satisfy RLS) ---
-        const { error: tableError } = await supabase.from('gallery').insert([{
-          user_id: userId,
-          image_url: publicUrl
-        }]);
-        if (tableError) {
-          console.error('Gallery table insert failed:', tableError);
+        // Insert row into gallery table (RLS-compliant)
+        const { error: insertError } = await supabase.from('gallery')
+          .insert([{ user_id: userId, image_url: publicData.publicUrl }]);
+
+        if (insertError) {
+          console.error('Gallery insert error:', insertError.message);
           return;
         }
 
-        setGallery([{ id: path, image_url: publicUrl, user_id }, ...gallery]);
+        setGallery(prev => [{ id: path, image_url: publicData.publicUrl, user_id }, ...prev]);
       } finally {
         setCapturing(false);
         if (overlay) overlay.style.display = '';
@@ -100,11 +104,16 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
     });
   };
 
-  // --- Update Display Name ---
+  // --- Settings ---
   const updateDisplayName = async () => {
-    if (!session?.user?.id) return;
-    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName });
-    session.user.user_metadata = { ...session.user.user_metadata, displayName };
+    if (!userId) return;
+    const { error } = await supabase.from('profiles')
+      .upsert({ id: userId, display_name: displayName });
+
+    if (!error) {
+      // update session metadata locally
+      session.user.user_metadata = { ...session.user.user_metadata, display_name };
+    }
   };
 
   return (
@@ -116,7 +125,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
         <button className={`px-2 py-1 rounded ${activeTab==='settings'?'bg-white/30':''}`} onClick={() => setActiveTab('settings')}>Settings</button>
       </div>
 
-      {/* Tab Content */}
+      {/* Tab content */}
       <div className="max-h-80 overflow-y-auto">
         {activeTab === 'leaderboard' && (
           <div className="flex flex-col gap-2">
