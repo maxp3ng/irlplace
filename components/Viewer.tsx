@@ -12,21 +12,20 @@ export default function Viewer() {
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   
-  // FIXED ORIGIN: Captures lat, lng, AND alt at the start of the session
   const originGps = useRef<{lat: number, lng: number, alt: number} | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0, alt: 0 });
 
   const [voxels, setVoxels] = useState<Voxel[]>([]);
   const [position, setPosition] = useState({ lat: 0, lng: 0, alt: 0 });
 
-  // 1. GPS & ALTITUDE WATCHER
+  // 1. GPS WATCHER
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const coords = { 
           lat: pos.coords.latitude, 
           lng: pos.coords.longitude, 
-          alt: pos.coords.altitude || 0 // Default to 0 if altitude is unavailable
+          alt: pos.coords.altitude || 0 
         };
         setPosition(coords);
         latestPos.current = coords;
@@ -49,7 +48,7 @@ export default function Viewer() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // 3. ENGINE SETUP
+  // 3. ENGINE & HIT-TEST SETUP
   useEffect(() => {
     if (!mountRef.current) return;
 
@@ -60,10 +59,19 @@ export default function Viewer() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
 
-    const raycaster = new THREE.Raycaster();
-    const tempMatrix = new THREE.Matrix4();
     scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
 
+    // --- HIT TEST & RETICLE ASSETS ---
+    const reticleGeometry = new THREE.RingGeometry(0.04, 0.05, 32).rotateX(-Math.PI / 2);
+    const reticle = new THREE.Mesh(reticleGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
+
+    let hitTestSource: XRHitTestSource | null = null;
+    let hitTestSourceRequested = false;
+
+    // Compass Alignment
     window.addEventListener('deviceorientationabsolute', (event) => {
       if (event.alpha !== null && !scene.userData.aligned) {
         scene.rotation.y = THREE.MathUtils.degToRad(event.alpha);
@@ -71,39 +79,58 @@ export default function Viewer() {
       }
     }, { once: true });
 
+    // --- INTERACTION ---
     const controller = renderer.xr.getController(0);
     controller.addEventListener('select', async () => {
-      if (!originGps.current) return;
+      if (!reticle.visible || !originGps.current) return;
 
-      tempMatrix.identity().extractRotation(controller.matrixWorld);
-      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      // Use the Reticle's actual floor position
+      const worldPos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+      
+      const latScale = 111111;
+      const lonScale = 111111 * Math.cos(originGps.current.lat * Math.PI / 180);
+      
+      const newLat = originGps.current.lat - (worldPos.z / latScale);
+      const newLon = originGps.current.lng + (worldPos.x / lonScale);
+      const newAlt = originGps.current.alt + worldPos.y;
 
-      const intersects = raycaster.intersectObjects(Array.from(voxelsMap.current.values()));
-
-      if (intersects.length > 0) {
-        const hitId = intersects[0].object.userData.dbId;
-        await supabase.from('voxels').delete().eq('id', hitId);
-      } else {
-        const worldPos = new THREE.Vector3(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
-        const latScale = 111111;
-        const lonScale = 111111 * Math.cos(originGps.current.lat * Math.PI / 180);
-        
-        const newLat = originGps.current.lat - (worldPos.z / latScale);
-        const newLon = originGps.current.lng + (worldPos.x / lonScale);
-        
-        // Save the Absolute Altitude: Current GPS Altitude + AR local Y offset
-        const newAlt = originGps.current.alt + worldPos.y;
-
-        await supabase.from('voxels').insert([{
-          lat: newLat, 
-          lon: newLon, 
-          alt: newAlt,
-          color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString()
-        }]);
-      }
+      await supabase.from('voxels').insert([{
+        lat: newLat, lon: newLon, alt: newAlt,
+        color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString()
+      }]);
     });
     scene.add(controller);
+
+    // --- ANIMATION LOOP ---
+    renderer.setAnimationLoop((time, frame) => {
+      if (frame) {
+        const session = renderer.xr.getSession();
+        if (session && !hitTestSourceRequested) {
+          session.requestReferenceSpace('viewer').then((refSpace) => {
+            session.requestHitTestSource?.({ space: refSpace })?.then((source) => {
+              hitTestSource = source;
+            });
+          });
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          const referenceSpace = renderer.xr.getReferenceSpace();
+          const hitTestResults = frame.getHitTestResults(hitTestSource);
+          if (hitTestResults.length > 0 && referenceSpace) {
+            const hit = hitTestResults[0];
+            const pose = hit.getPose(referenceSpace);
+            if (pose) {
+              reticle.visible = true;
+              reticle.matrix.fromArray(pose.transform.matrix);
+            }
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+      renderer.render(scene, camera);
+    });
 
     const button = ARButton.createButton(renderer, { 
       requiredFeatures: ["hit-test"], 
@@ -112,7 +139,6 @@ export default function Viewer() {
     });
     document.body.appendChild(button);
 
-    renderer.setAnimationLoop(() => renderer.render(scene, camera));
     return () => { renderer.dispose(); button.remove(); };
   }, []);
 
@@ -120,27 +146,20 @@ export default function Viewer() {
   useEffect(() => {
     const scene = sceneRef.current;
     if (position.lat === 0) return;
-
-    if (!originGps.current) {
-      originGps.current = { ...position };
-    }
+    if (!originGps.current) originGps.current = { ...position };
 
     const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 
     voxels.forEach((voxel) => {
       let mesh = voxelsMap.current.get(voxel.id);
-      
       if (!mesh) {
         const z = -(voxel.lat - originGps.current!.lat) * 111111;
         const x = (voxel.lon - originGps.current!.lng) * (111111 * Math.cos(originGps.current!.lat * Math.PI / 180));
-        
-        // Vertical Y = Voxel Absolute Altitude - Session Origin Altitude
         const y = voxel.alt - originGps.current!.alt;
 
         mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({ color: voxel.color }));
         mesh.userData.dbId = voxel.id;
-        mesh.position.set(x, y, z);
-        
+        mesh.position.set(x, y + 0.05, z); // Offset by 0.05 so box sits ON the floor, not in it
         scene.add(mesh);
         voxelsMap.current.set(voxel.id, mesh);
       }
@@ -155,23 +174,19 @@ export default function Viewer() {
     });
   }, [voxels, position]);
 
-  const handleRecenter = () => {
-    originGps.current = { ...latestPos.current };
-    voxelsMap.current.forEach((mesh) => sceneRef.current.remove(mesh));
-    voxelsMap.current.clear();
-  };
-
   return (
     <>
-      <div className="fixed top-4 left-4 z-50 flex flex-col gap-2">
+      <div className="fixed top-4 left-4 z-50 flex flex-col gap-2 pointer-events-none">
         <div className="bg-black/60 p-2 text-white text-[10px] rounded backdrop-blur-md border border-white/10">
-          LAT: {position.lat.toFixed(6)}<br/>
-          LNG: {position.lng.toFixed(6)}<br/>
-          ALT: {position.alt.toFixed(2)}m
+          GPS: {position.lat.toFixed(6)}, {position.lng.toFixed(6)} | Alt: {position.alt.toFixed(1)}m
         </div>
         <button 
-          onClick={handleRecenter}
-          className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg active:scale-95 transition-transform"
+          onClick={() => {
+            originGps.current = { ...latestPos.current };
+            voxelsMap.current.forEach(m => sceneRef.current.remove(m));
+            voxelsMap.current.clear();
+          }}
+          className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg pointer-events-auto active:scale-95"
         >
           RECENTER WORLD
         </button>
