@@ -78,8 +78,8 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
 
   // --- Settings ---
   const updateDisplayName = async () => {
-    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName });
-    session.user.user_metadata = { ...session.user.user_metadata, display_name };
+    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName});
+    session.user.user_metadata = { ...session.user.user_metadata, display_name: displayName};
   };
 
   return (
@@ -119,8 +119,9 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
             <input
               type="text"
               value={displayName}
+              placeholder="bob"
               onChange={e => setDisplayName(e.target.value)}
-              className="text-black px-2 py-1 rounded"
+              className="text-white px-2 py-1 rounded"
             />
             <button onClick={updateDisplayName} className="bg-blue-500 px-3 py-1 rounded mt-2">Save</button>
           </div>
