@@ -87,12 +87,12 @@ export default function GlobalARViewer() {
       }]);
     });
     scene.add(controller);
-
+    const Z_OFFSET = -1.5;
     // --- ANIMATION LOOP ---
     renderer.setAnimationLoop(() => {
       if (renderer.xr.isPresenting && ghostRef.current) {
         // Target is 0.5m in front of the camera
-        const targetPos = new THREE.Vector3(0, 0, -0.5).applyMatrix4(camera.matrixWorld);
+        const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         
         // SNAP LOGIC: Round the target position to the nearest 0.1m
         ghostRef.current.position.set(
