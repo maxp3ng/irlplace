@@ -112,7 +112,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
 
     if (!error) {
       // update session metadata locally
-      session.user.user_metadata = { ...session.user.user_metadata, display_name };
+      session.user.user_metadata = { ...session.user.user_metadata, displayName };
     }
   };
 
