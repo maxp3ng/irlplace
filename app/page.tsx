@@ -69,7 +69,12 @@ export default function App() {
   return (
     <>
       <div className="fixed inset-0 z-0">
-        <Viewer />
+        <Viewer 
+          voxels={voxels}
+          isPlacing={isPlacing}
+          pixelPos={pixelPos}
+          selectedColor={selectedColor}
+        />
       </div>
 
       <div className="relative z-10 h-screen w-full bg-transparent overflow-hidden select-none font-sans">
