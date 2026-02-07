@@ -1,27 +1,40 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* Default state: Hide overlay when not in AR */
+/* 1. Reset & Base Styles */
+:root {
+  --background: #000000;
+  --foreground: #ffffff;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  margin: 0;
+  overflow: hidden; /* Critical for AR stability */
+}
+
+/* 2. AR Overlay Logic */
+/* Default: Hide it */
 #ar-overlay {
   display: none;
 }
 
-/* AR State: This selector is the 'silver bullet' for iOS WebXR Viewer.
-   It forces the HTML to the top layer when the AR session starts.
+/* AR Active: Use the correct pseudo-class for v4 compatibility.
+   We use :where() to ensure the linter doesn't crash if :xr-overlay 
+   isn't supported by the current browser environment.
 */
-:where(::xr-overlay) #ar-overlay {
+:where(:xr-overlay) #ar-overlay {
   display: block !important;
-  position: absolute;
+  position: fixed;
   inset: 0;
   width: 100vw;
   height: 100vh;
   z-index: 9999;
   pointer-events: none;
-  background: transparent;
 }
 
-/* Standard Utilities to avoid linter errors */
+/* 3. Utility Classes */
+/* In v4, we define these as standard CSS classes */
 .pointer-events-auto {
   pointer-events: auto !important;
 }
