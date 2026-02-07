@@ -10,8 +10,9 @@ const GRID_SIZE = 0.001;
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
 const Z_OFFSET = -1.2;
-const VIEW_RADIUS_METERS = 50;
-const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE;
+const VIEW_RADIUS_METERS = 500;
+// Roughly 50m in degrees
+const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 
 interface Voxel {
   id: string;
