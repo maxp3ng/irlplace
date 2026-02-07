@@ -157,30 +157,37 @@ export default function GlobalARViewer() {
       const worldPos = new THREE.Vector3();
       ghostRef.current.getWorldPosition(worldPos);
 
-      // Deletion check
-      let existingVoxelId: string | null = null;
+      let voxelToDelete: any = null;
       voxelsMap.current.forEach((mesh, id) => {
-        if (mesh.position.distanceTo(ghostRef.current!.position) < 0.05) existingVoxelId = id;
+        if (mesh.position.distanceTo(ghostRef.current!.position) < 0.05) {
+          const voxel = voxelsMap.current.get(id);
+          if (voxel && voxel.user_id === session.user.id) {
+            voxelToDelete = { id, mesh };
+          }
+        }
       });
 
-      if (existingVoxelId) {
-        const mesh = voxelsMap.current.get(existingVoxelId);
-        if (mesh) scene.remove(mesh);
-        voxelsMap.current.delete(existingVoxelId);
-        await supabase.from('voxels').delete().eq('id', existingVoxelId);
+      if (voxelToDelete) {
+        sceneRef.current.remove(voxelToDelete.mesh);
+        voxelsMap.current.delete(voxelToDelete.id);
+        await supabase.from('voxels').delete().eq('id', voxelToDelete.id);
       } else {
         const origin = getGlobalOrigin(latestPos.current.lat, latestPos.current.lng);
         const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
+
         const newVoxel = {
           lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (worldPos.x / lonScale),
           alt: worldPos.y,
-          color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString()
+          color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString(),
+          user_id: session.user.id
         };
+
         const { data } = await supabase.from('voxels').insert([newVoxel]).select().single();
         if (data) addVoxelLocally(data);
       }
     });
+
     scene.add(controller);
 
     // Animation Loop
