@@ -6,16 +6,17 @@ import * as THREE from "three";
 
 interface MainMenuProps {
   session: any;
-  rendererRef: React.RefObject<THREE.WebGLRenderer | null>;
+  rendererRef: React.RefObject<THREE.WebGLRenderer|null>;
 }
 
 export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   const [activeTab, setActiveTab] = useState<'leaderboard' | 'gallery' | 'settings'>('leaderboard');
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
-  const [gallery, setGallery] = useState<any[]>([]);
-  const [username, setUsername] = useState<string>(session?.user?.user_metadata?.username || '');
+  const [leaderboard, setLeaderboard] = useState<{ user_id: string, blocks: number, display_name?: string }[]>([]);
+  const [gallery, setGallery] = useState<{ id: string, image_url: string, user_id: string }[]>([]);
+  const [displayName, setDisplayName] = useState<string>(session.user.user_metadata?.display_name || '');
   const [capturing, setCapturing] = useState(false);
 
+  // --- Leaderboard ---
   useEffect(() => {
     const fetchLeaderboard = async () => {
       const { data } = await supabase.from('voxels').select('user_id');
@@ -44,16 +45,17 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
       const { data } = await supabase.from('gallery').select('*').order('created_at', { ascending: false });
       if (data) setGallery(data);
     };
-    fetchLB();
-  }, [activeTab]);
+    fetchGallery();
+  }, []);
 
-  const capture = async () => {
-    if (!rendererRef.current) return;
+  const captureScreenshot = async () => {
+    if (!rendererRef.current || !session) return;
     setCapturing(true);
-    const overlay = document.getElementById('ar-overlay');
-    if (overlay) overlay.style.opacity = '0';
 
-    setTimeout(async () => {
+    const overlay = document.getElementById('ar-overlay');
+    if (overlay) overlay.style.display = 'none';
+
+    requestAnimationFrame(async () => {
       const canvas = rendererRef.current!.domElement;
       canvas.toBlob(async (blob) => {
         if (!blob) {
@@ -75,13 +77,13 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
         }
 
         // get public URL
-        const { data: urlData, error: urlError } = supabase.storage.from('gallery').getPublicUrl(path);
-        if (urlError) {
-          console.error(urlError);
-          setCapturing(false);
-          if (overlay) overlay.style.display = '';
-          return;
-        }
+        const { data: urlData} = supabase.storage.from('gallery').getPublicUrl(path);
+        // if (urlError) {
+        //   console.error(urlError);
+        //   setCapturing(false);
+        //   if (overlay) overlay.style.display = '';
+        //   return;
+        // }
 
         // insert into gallery table
         const { error: dbError, data: dbData } = await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: urlData.publicUrl }]).select().single();
@@ -100,7 +102,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   // --- Settings ---
   const updateDisplayName = async () => {
     await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName });
-    session.user.user_metadata = { ...session.user.user_metadata, display_name };
+    session.user.user_metadata = { ...session.user.user_metadata, displayName };
   };
 
   return (
@@ -123,7 +125,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
               </div>
             ))}
           </div>
-        ))}
+        )}
 
         {activeTab==='gallery' && (
           <div className="flex flex-col gap-2">

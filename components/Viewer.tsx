@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
@@ -14,6 +14,7 @@ const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE;
 
 export default function Viewer({ session }: { session: any }) {
+  // --- Refs ---
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -21,18 +22,19 @@ export default function Viewer({ session }: { session: any }) {
   const originGps = useRef<{ lat: number; lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const geoConstantsRef = useRef<{ lonScale: number } | null>(null);
 
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
   const sessionRef = useRef(session);
 
+  // --- State ---
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
+  const [aligned, setAligned] = useState(false);
 
-  // --- Sync math refs (No changes to logic) ---
+  // --- Sync refs ---
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => {
@@ -40,16 +42,18 @@ export default function Viewer({ session }: { session: any }) {
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
   }, [selectedColor]);
 
-  useEffect(() => {
-    if (position.lat) {
-      const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
-      geoConstantsRef.current = { lonScale };
-    }
+  // --- Geo constants ---
+  const geoConstants = useMemo(() => {
+    if (!position.lat) return null;
+    const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
+    return { lonScale, latRatio: METERS_PER_DEGREE / VOXEL_SNAP, lonRatio: lonScale / VOXEL_SNAP };
   }, [position.lat]);
 
+  // --- Add voxel ---
   const addVoxelLocally = (voxel: any) => {
     if (voxelsMap.current.has(voxel.id)) return;
     if (!originGps.current) originGps.current = { lat: voxel.lat, lng: voxel.lon };
+
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
     const x = (voxel.lon - origin.lng) * lonScale;
@@ -64,33 +68,45 @@ export default function Viewer({ session }: { session: any }) {
     voxelsMap.current.set(voxel.id, mesh);
   };
 
+  // --- Move voxel ghost ---
   const handleMove = (axis: 'x' | 'y' | 'z', steps: number) => {
     if (!ghostRef.current) return;
-    const idx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
-    ghostRef.current.position.setComponent(idx, ghostRef.current.position.getComponent(idx) + (steps * VOXEL_SNAP));
+    ghostRef.current.position[axis] += VOXEL_SNAP * steps;
   };
 
+  // --- Confirm voxel ---
   const handleConfirm = async () => {
-    if (!ghostRef.current || !session || !originGps.current || !geoConstantsRef.current) return;
+    if (!ghostRef.current || !sessionRef.current || !originGps.current) return;
+
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
-    const { lonScale } = geoConstantsRef.current;
+    const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
+    // --- Delete if overlapping ---
     let existingId: string | null = null;
+    let existingMesh: THREE.Mesh | null = null;
     voxelsMap.current.forEach((mesh, id) => {
-      if (mesh.position.distanceTo(localPos) < 0.05) existingId = id;
+      if (
+        Math.abs(mesh.position.x - localPos.x) < 0.05 &&
+        Math.abs(mesh.position.z - localPos.z) < 0.05 &&
+        Math.abs(mesh.position.y - localPos.y) < 0.05
+      ) {
+        existingId = id;
+        existingMesh = mesh;
+      }
     });
 
-    if (existingId) {
+    if (existingId && existingMesh) {
       const { error } = await supabase.from('voxels').delete().eq('id', existingId);
       if (!error) {
-        sceneRef.current.remove(voxelsMap.current.get(existingId)!);
+        sceneRef.current.remove(existingMesh);
         voxelsMap.current.delete(existingId);
       }
       setIsDrafting(false);
       return;
     }
 
+    // --- Insert voxel ---
     const voxelData = {
       lat: origin.lat - localPos.z / METERS_PER_DEGREE,
       lon: origin.lng + localPos.x / lonScale,
@@ -113,11 +129,8 @@ export default function Viewer({ session }: { session: any }) {
     setIsDrafting(false);
   };
 
-  // --- AR and Geolocation Setup ---
+  // --- Geolocation ---
   useEffect(() => {
-    const watchId = navigator.geolocation.watchPosition(pos => {
-      setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-    }, null, { enableHighAccuracy: true });
     const watchId = navigator.geolocation.watchPosition(
       pos => {
         latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -130,9 +143,11 @@ export default function Viewer({ session }: { session: any }) {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
+  // --- AR Engine ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
@@ -149,8 +164,10 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
+    // Controller
     const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); });
+    const triggerDrafting = () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); };
+    controller.addEventListener('select', triggerDrafting);
     sceneRef.current.add(controller);
 
     const overlay = document.getElementById('ar-overlay');
@@ -158,7 +175,7 @@ export default function Viewer({ session }: { session: any }) {
     overlay?.addEventListener('touchstart', handleTouch);
 
     renderer.setAnimationLoop(() => {
-      if (!isDraftingRef.current && geoConstantsRef.current && originGps.current) {
+      if (!isDraftingRef.current && geoConstants && originGps.current) {
         const worldTarget = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         const localTarget = sceneRef.current.worldToLocal(worldTarget.clone());
         ghostRef.current?.position.set(
@@ -170,37 +187,40 @@ export default function Viewer({ session }: { session: any }) {
       renderer.render(sceneRef.current, camera);
     });
 
-    const overlay = document.getElementById('ar-overlay');
-    if (overlay) {
-      const button = ARButton.createButton(renderer, { 
-        requiredFeatures: ['local-floor'], 
-        optionalFeatures: ['dom-overlay'], 
-        domOverlay: { root: overlay } 
-      });
-      document.body.appendChild(button);
-      
-      return () => {
-        renderer.setAnimationLoop(null);
-        renderer.dispose();
-        if (document.body.contains(button)) document.body.removeChild(button);
-      };
-    }
-  }, [!!session]);
+    const button = ARButton.createButton(renderer, { 
+      requiredFeatures: ['local-floor'], 
+      optionalFeatures: ['dom-overlay'], 
+      domOverlay: { root: overlay! } 
+    });
+    document.body.appendChild(button);
 
+    return () => {
+      overlay?.removeEventListener('touchstart', handleTouch);
+      sceneRef.current.remove(ghost, light, controller);
+      renderer.setAnimationLoop(null);
+      renderer.dispose();
+      if (document.body.contains(button)) document.body.removeChild(button);
+    };
+  }, [!!session, !!geoConstants]);
+
+  // --- Data sync ---
   useEffect(() => {
     if (position.lat === 0 || !session) return;
+
     const loadAndListen = async () => {
       const { data } = await supabase.from('voxels').select('*')
         .gte('lat', position.lat - DEGREE_THRESHOLD)
-        .lte('lat', position.lat + DEGREE_THRESHOLD);
-      
+        .lte('lat', position.lat + DEGREE_THRESHOLD)
+        .gte('lon', position.lng - DEGREE_THRESHOLD)
+        .lte('lon', position.lng + DEGREE_THRESHOLD);
       if (data) data.forEach(v => addVoxelLocally(v));
 
       const channel = supabase.channel('voxels_realtime')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new))
-        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
-          const mesh = voxelsMap.current.get(p.old.id);
-          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(p.old.id); }
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, payload => addVoxelLocally(payload.new))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, payload => {
+          const id = payload.old.id;
+          const mesh = voxelsMap.current.get(id);
+          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(id); }
         })
         .subscribe();
 
@@ -210,44 +230,25 @@ export default function Viewer({ session }: { session: any }) {
     loadAndListen();
   }, [position.lat, !!session]);
 
-  // Touch handlers for interaction blocking
-  const blockUI = () => { isInteractingWithUIRef.current = true; };
-  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 150); };
-
   return (
     <>
-      {/* This ID is targeted by globals.css :xr-overlay.
-        It must be at the root of the body (returned here).
-      */}
-      <div id="ar-overlay" className="pointer-events-none">
-        {/* Inner container to provide a relative context for iOS absolute positioning
-        */}
-        <div className="relative w-full h-full pointer-events-none">
-          
-          <div 
-            className="pointer-events-auto" 
-            onTouchStart={blockUI} 
-            onTouchEnd={unblockUI} 
-            onMouseDown={blockUI} 
-            onMouseUp={unblockUI}
-          >
-            <MainMenu session={session} rendererRef={rendererRef} />
-          </div>
+      <div 
+        id="ar-overlay" 
+        className="fixed inset-0 pointer-events-none z-[9999]"
+        onPointerDown={() => { isInteractingWithUIRef.current = true; }}
+        onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
+      >
+        <MainMenu 
+          session={session}
+          rendererRef={rendererRef}
+        />
 
-          <div 
-            className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto" 
-            onTouchStart={blockUI} 
-            onTouchEnd={unblockUI} 
-            onMouseDown={blockUI} 
-            onMouseUp={unblockUI}
-          >
-            {isDrafting ? (
-              <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
-            ) : (
-              <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
-            )}
-          </div>
-          
+        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
+          {isDrafting ? (
+            <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
+          ) : (
+            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
+          )}
         </div>
       </div>
 
