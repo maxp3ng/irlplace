@@ -55,7 +55,7 @@ export default function Viewer() {
     );
 
     // --- Cone Geometry ---
-    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(Math.PI / 2);
+    const geometry = new THREE.BoxGeometry(0.1,0.1,0.1);
 
     // --- Controller for spawning cones ---
     const controller = renderer.xr.getController(0);
