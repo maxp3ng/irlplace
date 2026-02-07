@@ -18,7 +18,7 @@ export default function Viewer({ session }: { session: any }) {
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   const ghostRef = useRef<THREE.Mesh | null>(null);
-  const originGps = useRef<{ lat: number, lng: number } | null>(null);
+  const originGps = useRef<{ lat: number; lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const geoConstantsRef = useRef<{ lonScale: number } | null>(null);
@@ -26,6 +26,7 @@ export default function Viewer({ session }: { session: any }) {
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
+  const sessionRef = useRef(session);
 
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
@@ -33,6 +34,7 @@ export default function Viewer({ session }: { session: any }) {
 
   // --- Sync math refs (No changes to logic) ---
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
@@ -50,14 +52,14 @@ export default function Viewer({ session }: { session: any }) {
     if (!originGps.current) originGps.current = { lat: voxel.lat, lng: voxel.lon };
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-    const targetX = (voxel.lon - origin.lng) * lonScale;
-    const targetZ = -(voxel.lat - origin.lat) * METERS_PER_DEGREE;
+    const x = (voxel.lon - origin.lng) * lonScale;
+    const z = -(voxel.lat - origin.lat) * METERS_PER_DEGREE;
 
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
       new THREE.MeshPhongMaterial({ color: voxel.color })
     );
-    mesh.position.set(targetX, voxel.alt, targetZ);
+    mesh.position.set(x, voxel.alt, z);
     sceneRef.current.add(mesh);
     voxelsMap.current.set(voxel.id, mesh);
   };
@@ -85,16 +87,28 @@ export default function Viewer({ session }: { session: any }) {
         sceneRef.current.remove(voxelsMap.current.get(existingId)!);
         voxelsMap.current.delete(existingId);
       }
-    } else {
-      const voxelData = {
-        lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
-        lon: origin.lng + (localPos.x / lonScale),
-        alt: localPos.y,
-        color: selectedColorRef.current.hex,
-        user_id: session.user.id
-      };
-      const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
-      if (data) addVoxelLocally(data);
+      setIsDrafting(false);
+      return;
+    }
+
+    const voxelData = {
+      lat: origin.lat - localPos.z / METERS_PER_DEGREE,
+      lon: origin.lng + localPos.x / lonScale,
+      alt: localPos.y,
+      color: selectedColorRef.current.hex,
+      user_id: sessionRef.current.user.id
+    };
+
+    const tempId = `temp-${Date.now()}`;
+    addVoxelLocally({ ...voxelData, id: tempId });
+
+    const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
+    if (data) {
+      const mesh = voxelsMap.current.get(tempId);
+      if (mesh) {
+        voxelsMap.current.delete(tempId);
+        voxelsMap.current.set(data.id, mesh);
+      }
     }
     setIsDrafting(false);
   };
@@ -104,6 +118,15 @@ export default function Viewer({ session }: { session: any }) {
     const watchId = navigator.geolocation.watchPosition(pos => {
       setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
     }, null, { enableHighAccuracy: true });
+    const watchId = navigator.geolocation.watchPosition(
+      pos => {
+        latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setPosition(latestPos.current);
+        if (!originGps.current) originGps.current = { ...latestPos.current };
+      },
+      null,
+      { enableHighAccuracy: true }
+    );
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
@@ -129,6 +152,10 @@ export default function Viewer({ session }: { session: any }) {
     const controller = renderer.xr.getController(0);
     controller.addEventListener('select', () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); });
     sceneRef.current.add(controller);
+
+    const overlay = document.getElementById('ar-overlay');
+    const handleTouch = (e: TouchEvent) => { if (!isInteractingWithUIRef.current) triggerDrafting(); };
+    overlay?.addEventListener('touchstart', handleTouch);
 
     renderer.setAnimationLoop(() => {
       if (!isDraftingRef.current && geoConstantsRef.current && originGps.current) {
@@ -162,10 +189,25 @@ export default function Viewer({ session }: { session: any }) {
 
   useEffect(() => {
     if (position.lat === 0 || !session) return;
-    supabase.from('voxels').select('*')
-      .gte('lat', position.lat - DEGREE_THRESHOLD)
-      .lte('lat', position.lat + DEGREE_THRESHOLD)
-      .then(({ data }) => data?.forEach(addVoxelLocally));
+    const loadAndListen = async () => {
+      const { data } = await supabase.from('voxels').select('*')
+        .gte('lat', position.lat - DEGREE_THRESHOLD)
+        .lte('lat', position.lat + DEGREE_THRESHOLD);
+      
+      if (data) data.forEach(v => addVoxelLocally(v));
+
+      const channel = supabase.channel('voxels_realtime')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
+          const mesh = voxelsMap.current.get(p.old.id);
+          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(p.old.id); }
+        })
+        .subscribe();
+
+      return () => { supabase.removeChannel(channel); };
+    };
+
+    loadAndListen();
   }, [position.lat, !!session]);
 
   // Touch handlers for interaction blocking
