@@ -240,7 +240,7 @@ export default function Viewer({ session }: { session: any }) {
             <MainMenu session={session} rendererRef={rendererRef} />
           </div>
           <div 
-            className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto"
+            className="absolute inset-x-0 bottom-32 flex flex-col items-center gap-8 pointer-events-auto"
             onPointerDown={blockUI} onPointerUp={unblockUI}
             onTouchStart={blockUI} onTouchEnd={unblockUI}
           >
