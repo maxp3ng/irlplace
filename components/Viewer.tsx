@@ -240,14 +240,6 @@ export default function Viewer() {
         -snapLat * METERS_PER_DEGREE
       );
       
-      const MAX_VISIBLE_DISTANCE = 10; 
-      voxelsMap.current.forEach(mesh => {
-        const dist = mesh.position.distanceTo(camPos);
-
-        // hide/show instead of deleting
-        mesh.visible = dist <= MAX_VISIBLE_DISTANCE;
-      });
-      
       renderer.render(scene, camera);
     });
 
