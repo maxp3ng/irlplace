@@ -1,28 +1,15 @@
 @import "tailwindcss";
 
-:root {
-  --background: #000000;
-  --foreground: #ffffff;
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  margin: 0;
-  overflow: hidden;
-}
-
-/* 1. Default State */
+/* 1. Default state */
 #ar-overlay {
   display: none;
 }
 
-/* 2. WebXR State 
-   We wrap the pseudo-class in :where() to suppress the parser error.
-   If :where(:xr-overlay) still fails, we use a custom attribute approach.
+/* 2. AR State - The Fix
+   We use a manual data-attribute because Tailwind v4 
+   cannot validate the experimental :xr-overlay pseudo-class yet.
 */
-:where(:xr-overlay) #ar-overlay, 
-[data-xr-active="true"] #ar-overlay {
+[data-xr-active="true"]#ar-overlay {
   display: block !important;
   position: fixed;
   inset: 0;
@@ -30,9 +17,10 @@ body {
   height: 100vh;
   z-index: 9999;
   pointer-events: none;
+  background: transparent;
 }
 
-/* 3. Standard Utilities */
+/* 3. Utilities */
 .pointer-events-auto {
   pointer-events: auto !important;
 }
