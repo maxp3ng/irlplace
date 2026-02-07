@@ -5,8 +5,7 @@ import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
-import LeaderboardMenu from '@/components/LeaderboardMenu'
-
+import LeaderboardMenu from '@/components/LeaderboardMenu';
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
@@ -51,11 +50,11 @@ export default function Viewer({ session }: { session: any }) {
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
     const targetX = (voxel.lon - origin.lng) * lonScale;
     const targetZ = -(voxel.lat - origin.lat) * METERS_PER_DEGREE;
-    
+
     let exists = false;
     voxelsMap.current.forEach((m) => {
-      if (Math.abs(m.position.x - targetX) < 0.05 && 
-          Math.abs(m.position.z - targetZ) < 0.05 && 
+      if (Math.abs(m.position.x - targetX) < 0.05 &&
+          Math.abs(m.position.z - targetZ) < 0.05 &&
           Math.abs(m.position.y - voxel.alt) < 0.05) exists = true;
     });
     if (exists) return;
@@ -100,7 +99,6 @@ export default function Viewer({ session }: { session: any }) {
     setIsDrafting(false);
   };
 
-  // --- GEOLOCATION ---
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(pos => {
       latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -109,13 +107,6 @@ export default function Viewer({ session }: { session: any }) {
     }, null, { enableHighAccuracy: true });
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
-
-  // --- ANONYMOUS SIGN-IN ---
-  const signInAnonymously = async () => {
-    const { data, error } = await supabase.auth.signInAnonymously();
-    if (error) console.error(error);
-    else setSession(data.session);
-  };
 
   const requestCompass = async () => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
@@ -151,11 +142,10 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
-    // FIX: Re-adding the select listener so you can trigger drafting
     const controller = renderer.xr.getController(0);
     const onSelect = () => {
-        if (isInteractingWithUIRef.current) return;
-        setIsDrafting(true);
+      if (isInteractingWithUIRef.current) return;
+      setIsDrafting(true);
     };
     controller.addEventListener('select', onSelect);
     sceneRef.current.add(controller);
@@ -168,31 +158,34 @@ export default function Viewer({ session }: { session: any }) {
         const { lonScale, latRatio, lonRatio } = geoConstants;
         const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
         const snapLon = Math.round((targetPos.x / lonScale) * lonRatio) / lonRatio;
-        ghostRef.current?.position.set(snapLon * lonScale, Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP, -snapLat * METERS_PER_DEGREE);
+        ghostRef.current?.position.set(
+          snapLon * lonScale,
+          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
+          -snapLat * METERS_PER_DEGREE
+        );
       }
       renderer.render(sceneRef.current, camera);
     });
 
     const overlay = document.getElementById('ar-overlay');
     const button = ARButton.createButton(renderer, { 
-        requiredFeatures: ['local-floor'], 
-        optionalFeatures: ['dom-overlay'], 
-        domOverlay: { root: overlay! } 
+      requiredFeatures: ['local-floor'], 
+      optionalFeatures: ['dom-overlay'], 
+      domOverlay: { root: overlay! } 
     });
     document.body.appendChild(button);
 
     return () => {
-        // CLEANUP: Remove specifically created objects to avoid "Double Ghost"
-        controller.removeEventListener('select', onSelect);
-        sceneRef.current.remove(ghost);
-        sceneRef.current.remove(light);
-        sceneRef.current.remove(controller);
-        renderer.setAnimationLoop(null);
-        renderer.dispose();
-        if (document.body.contains(button)) document.body.removeChild(button);
-        if (mountRef.current?.contains(renderer.domElement)) mountRef.current.removeChild(renderer.domElement);
+      controller.removeEventListener('select', onSelect);
+      sceneRef.current.remove(ghost);
+      sceneRef.current.remove(light);
+      sceneRef.current.remove(controller);
+      renderer.setAnimationLoop(null);
+      renderer.dispose();
+      if (document.body.contains(button)) document.body.removeChild(button);
+      if (mountRef.current?.contains(renderer.domElement)) mountRef.current.removeChild(renderer.domElement);
     };
-  }, [!!session, !!geoConstants]); // Only restarts if session or geo constants change
+  }, [!!session, !!geoConstants]);
 
   // --- DATA SYNC ---
   useEffect(() => {
@@ -212,8 +205,27 @@ export default function Viewer({ session }: { session: any }) {
     };
     loadAndListen();
   }, [position.lat, session]);
-      <LeaderboardMenu session={session} />
-       <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
+
+  // --- RENDER ---
+  return (
+    <>
+      <div 
+        id="ar-overlay"
+        className="fixed inset-0 pointer-events-none z-[9999]"
+        onPointerDown={() => { isInteractingWithUIRef.current = true; }}
+        onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
+      >
+        {!isDrafting && (
+          <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
+            <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 shadow-2xl">
+              GPS: {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
+            </div>
+          </div>
+        )}
+
+        <LeaderboardMenu session={session} />
+
+        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
           ) : (
@@ -221,6 +233,7 @@ export default function Viewer({ session }: { session: any }) {
           )}
         </div>
       </div>
+
       <div ref={mountRef} className="fixed inset-0" />
     </>
   );
