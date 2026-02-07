@@ -7,7 +7,7 @@ import * as THREE from "three";
 
 interface MainMenuProps {
   session: any;
-  rendererRef: React.RefObject<THREE.WebGLRenderer>;
+  rendererRef: React.RefObject<THREE.WebGLRenderer|null>;
 }
 
 export default function MainMenu({ session, rendererRef }: MainMenuProps) {
