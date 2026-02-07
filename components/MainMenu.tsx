@@ -1,131 +1,92 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/utils/supabase';
 import * as THREE from "three";
 
-
 interface MainMenuProps {
   session: any;
-  rendererRef: React.RefObject<THREE.WebGLRenderer|null>;
+  rendererRef: React.RefObject<THREE.WebGLRenderer | null>;
 }
 
 export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   const [activeTab, setActiveTab] = useState<'leaderboard' | 'gallery' | 'settings'>('leaderboard');
-  const [leaderboard, setLeaderboard] = useState<{ user_id: string, blocks: number, display_name?: string }[]>([]);
-  const [gallery, setGallery] = useState<{ id: string, image_url: string, user_id: string }[]>([]);
-  const [displayName, setDisplayName] = useState<string>(session.user.user_metadata?.display_name || '');
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [gallery, setGallery] = useState<any[]>([]);
+  const [username, setUsername] = useState<string>(session?.user?.user_metadata?.username || '');
   const [capturing, setCapturing] = useState(false);
 
-  // --- Leaderboard ---
   useEffect(() => {
-    const fetchLeaderboard = async () => {
-      const { data } = await supabase
-        .from('voxels')
-        .select('user_id')
-      if (!data) return;
+    const fetchLB = async () => {
+      const { data: voxels } = await supabase.from('voxels').select('user_id');
+      const { data: profiles } = await supabase.from('profiles').select('id, username');
+      if (!voxels) return;
 
       const counts: Record<string, number> = {};
-      data.forEach((v: any) => counts[v.user_id] = (counts[v.user_id] || 0) + 1);
-
-      const lb = Object.entries(counts)
-        .map(([user_id, blocks]) => ({ user_id, blocks }))
-        .sort((a, b) => b.blocks - a.blocks);
-
-      // Fetch display names
-      const userIds = lb.map(l => l.user_id);
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, display_name')
-        .in('id', userIds);
+      voxels.forEach((v: any) => counts[v.user_id] = (counts[v.user_id] || 0) + 1);
       const profileMap: Record<string, string> = {};
-      profiles?.forEach(p => profileMap[p.id] = p.display_name || '');
+      profiles?.forEach(p => profileMap[p.id] = p.username);
 
-      setLeaderboard(lb.map(l => ({ ...l, display_name: profileMap[l.user_id] || '' })));
+      const lb = Object.entries(counts).map(([id, count]) => ({
+        username: profileMap[id] || 'Anonymous',
+        blocks: count
+      })).sort((a, b) => b.blocks - a.blocks);
+      setLeaderboard(lb);
     };
-    fetchLeaderboard();
-  }, []);
+    fetchLB();
+  }, [activeTab]);
 
-  // --- Gallery ---
-  useEffect(() => {
-    const fetchGallery = async () => {
-      const { data } = await supabase.from('gallery').select('*').order('created_at', { ascending: false });
-      if (data) setGallery(data);
-    };
-    fetchGallery();
-  }, []);
-
-  const captureScreenshot = async () => {
-    if (!rendererRef.current || !session) return;
+  const capture = async () => {
+    if (!rendererRef.current) return;
     setCapturing(true);
-
-    // Hide UI temporarily
     const overlay = document.getElementById('ar-overlay');
-    if (overlay) overlay.style.display = 'none';
+    if (overlay) overlay.style.opacity = '0';
 
-    requestAnimationFrame(async () => {
+    setTimeout(async () => {
       const canvas = rendererRef.current!.domElement;
       canvas.toBlob(async (blob) => {
-        if (!blob) { setCapturing(false); overlay && (overlay.style.display = ''); return; }
-        const fileName = `screenshot-${Date.now()}.png`;
-        await supabase.storage.from('gallery').upload(fileName, blob, { upsert: true });
-        const publicUrl = supabase.storage.from('gallery').getPublicUrl(fileName).data.publicUrl;
-        await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: publicUrl }]);
-        setGallery([{ id: fileName, image_url: publicUrl, user_id: session.user.id }, ...gallery]);
-        setCapturing(false);
-        overlay && (overlay.style.display = '');
-      });
-    });
-  };
+        if (overlay) overlay.style.opacity = '1';
+        if (!blob) return setCapturing(false);
 
-  // --- Settings ---
-  const updateDisplayName = async () => {
-    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName});
-    session.user.user_metadata = { ...session.user.user_metadata, display_name: displayName};
+        const path = `${session.user.id}/${Date.now()}.png`;
+        const { error } = await supabase.storage.from('gallery').upload(path, blob);
+        if (!error) {
+          const { data: { publicUrl } } = supabase.storage.from('gallery').getPublicUrl(path);
+          await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: publicUrl }]);
+          setActiveTab('gallery');
+        }
+        setCapturing(false);
+      });
+    }, 200);
   };
 
   return (
-    <div className="fixed top-4 right-4 bg-black/70 text-white p-4 rounded-xl w-72 pointer-events-auto z-[10000]">
-      {/* Tab buttons */}
-      <div className="flex justify-between mb-2">
-        <button className={`px-2 py-1 rounded ${activeTab==='leaderboard'?'bg-white/30':''}`} onClick={() => setActiveTab('leaderboard')}>Leaderboard</button>
-        <button className={`px-2 py-1 rounded ${activeTab==='gallery'?'bg-white/30':''}`} onClick={() => setActiveTab('gallery')}>Gallery</button>
-        <button className={`px-2 py-1 rounded ${activeTab==='settings'?'bg-white/30':''}`} onClick={() => setActiveTab('settings')}>Settings</button>
+    <div className="fixed top-4 right-4 bg-black/80 backdrop-blur-xl text-white p-4 rounded-3xl w-72 border border-white/10 shadow-2xl">
+      <div className="flex gap-1 mb-4 bg-white/5 p-1 rounded-2xl">
+        {['leaderboard', 'gallery', 'settings'].map((t: any) => (
+          <button key={t} onClick={() => setActiveTab(t)} className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase transition-all ${activeTab === t ? 'bg-white text-black' : 'text-white/40'}`}>{t}</button>
+        ))}
       </div>
 
-      {/* Tab content */}
-      <div className="max-h-80 overflow-y-auto">
-        {activeTab === 'leaderboard' && (
-          <div className="flex flex-col gap-2">
-            {leaderboard.map((l, i) => (
-              <div key={i} className="flex justify-between border-b border-white/20 pb-1">
-                <span>{l.display_name || l.user_id.slice(0,6)}</span>
-                <span>{l.blocks} blocks</span>
-              </div>
-            ))}
+      <div className="max-h-80 overflow-y-auto custom-scrollbar">
+        {activeTab === 'leaderboard' && leaderboard.map((l, i) => (
+          <div key={i} className="flex justify-between p-3 bg-white/5 rounded-2xl mb-2">
+            <span className="text-xs">{l.username}</span>
+            <span className="text-xs font-black">{l.blocks}</span>
           </div>
-        )}
+        ))}
 
         {activeTab === 'gallery' && (
-          <div className="flex flex-col gap-2">
-            <button onClick={captureScreenshot} className="bg-green-500 px-3 py-1 rounded mb-2">{capturing?'Capturing...':'Capture Screenshot'}</button>
-            {gallery.map(g => (
-              <img key={g.id} src={g.image_url} className="w-full rounded-md border border-white/20" />
-            ))}
+          <div className="flex flex-col gap-3">
+            <button onClick={capture} className="bg-blue-600 py-3 rounded-2xl text-[10px] font-black">{capturing ? 'CAPTURING...' : '📸 TAKE PHOTO'}</button>
           </div>
         )}
 
         {activeTab === 'settings' && (
-          <div className="flex flex-col gap-2">
-            <label className="text-[12px]">Display Name</label>
-            <input
-              type="text"
-              value={displayName}
-              placeholder="bob"
-              onChange={e => setDisplayName(e.target.value)}
-              className="text-white px-2 py-1 rounded"
-            />
-            <button onClick={updateDisplayName} className="bg-blue-500 px-3 py-1 rounded mt-2">Save</button>
+          <div className="flex flex-col gap-3">
+             <input value={username} onChange={e => setUsername(e.target.value)} className="bg-white/5 border border-white/10 p-3 rounded-2xl text-sm" placeholder="Username" />
+             <button onClick={() => supabase.from('profiles').upsert({ id: session.user.id, username })} className="bg-white text-black py-3 rounded-2xl font-black text-[10px]">SAVE</button>
+             <button onClick={() => supabase.auth.signOut()} className="text-red-500 text-[9px] font-bold mt-2">DISCONNECT</button>
           </div>
         )}
       </div>

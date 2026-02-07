@@ -14,7 +14,6 @@ const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE;
 
 export default function Viewer({ session }: { session: any }) {
-  // --- Refs ---
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -22,28 +21,23 @@ export default function Viewer({ session }: { session: any }) {
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  
-  // Decoupled GPS Math Ref to prevent re-renders
   const geoConstantsRef = useRef<{ lonScale: number } | null>(null);
 
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
-  const sessionRef = useRef<any>(session);
 
-  // --- State ---
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
 
-  // --- Sync refs ---
+  // --- Sync math refs (No changes to logic) ---
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
   }, [selectedColor]);
 
-  // Update GPS math without triggering useEffect re-runs
   useEffect(() => {
     if (position.lat) {
       const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
@@ -51,11 +45,9 @@ export default function Viewer({ session }: { session: any }) {
     }
   }, [position.lat]);
 
-  // --- Core Voxel Logic ---
   const addVoxelLocally = (voxel: any) => {
     if (voxelsMap.current.has(voxel.id)) return;
     if (!originGps.current) originGps.current = { lat: voxel.lat, lng: voxel.lon };
-
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
     const targetX = (voxel.lon - origin.lng) * lonScale;
@@ -72,80 +64,52 @@ export default function Viewer({ session }: { session: any }) {
 
   const handleMove = (axis: 'x' | 'y' | 'z', steps: number) => {
     if (!ghostRef.current) return;
-    // Fix string-based indexing for TypeScript
-    const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
-    const currentVal = ghostRef.current.position.getComponent(axisIndex);
-    ghostRef.current.position.setComponent(axisIndex, currentVal + (steps * VOXEL_SNAP));
+    const idx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+    ghostRef.current.position.setComponent(idx, ghostRef.current.position.getComponent(idx) + (steps * VOXEL_SNAP));
   };
 
   const handleConfirm = async () => {
-    if (!ghostRef.current || !sessionRef.current || !originGps.current || !geoConstantsRef.current) return;
-
+    if (!ghostRef.current || !session || !originGps.current || !geoConstantsRef.current) return;
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
     const { lonScale } = geoConstantsRef.current;
 
-    // Check for deletions
     let existingId: string | null = null;
-    let existingMesh: THREE.Mesh | null = null;
     voxelsMap.current.forEach((mesh, id) => {
-      if (mesh.position.distanceTo(localPos) < 0.05) {
-        existingId = id;
-        existingMesh = mesh;
-      }
+      if (mesh.position.distanceTo(localPos) < 0.05) existingId = id;
     });
 
-    if (existingId && existingMesh) {
+    if (existingId) {
       const { error } = await supabase.from('voxels').delete().eq('id', existingId);
       if (!error) {
-        sceneRef.current.remove(existingMesh);
+        sceneRef.current.remove(voxelsMap.current.get(existingId)!);
         voxelsMap.current.delete(existingId);
       }
-      setIsDrafting(false);
-      return;
-    }
-
-    const voxelData = {
-      lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
-      lon: origin.lng + (localPos.x / lonScale),
-      alt: localPos.y,
-      color: selectedColorRef.current.hex,
-      user_id: sessionRef.current.user.id
-    };
-
-    const tempId = `temp-${Date.now()}`;
-    addVoxelLocally({ ...voxelData, id: tempId });
-
-    const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
-    if (data) {
-      const mesh = voxelsMap.current.get(tempId);
-      if (mesh) {
-        voxelsMap.current.delete(tempId);
-        voxelsMap.current.set(data.id, mesh);
-      }
+    } else {
+      const voxelData = {
+        lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
+        lon: origin.lng + (localPos.x / lonScale),
+        alt: localPos.y,
+        color: selectedColorRef.current.hex,
+        user_id: session.user.id
+      };
+      const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
+      if (data) addVoxelLocally(data);
     }
     setIsDrafting(false);
   };
 
-  // --- Geolocation ---
+  // --- AR and Geolocation Setup ---
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(pos => {
-      latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      setPosition({ ...latestPos.current });
-      if (!originGps.current) originGps.current = { ...latestPos.current };
+      setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
     }, null, { enableHighAccuracy: true });
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // --- AR Engine Initialization ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
-
-    const renderer = new THREE.WebGLRenderer({ 
-      antialias: true, 
-      alpha: true,
-      preserveDrawingBuffer: true // Crucial for screenshots
-    });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
@@ -163,13 +127,10 @@ export default function Viewer({ session }: { session: any }) {
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', () => {
-      if (!isInteractingWithUIRef.current) setIsDrafting(true);
-    });
+    controller.addEventListener('select', () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); });
     sceneRef.current.add(controller);
 
     renderer.setAnimationLoop(() => {
-      // Use Ref here so location updates don't kill the loop
       if (!isDraftingRef.current && geoConstantsRef.current && originGps.current) {
         const worldTarget = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         const localTarget = sceneRef.current.worldToLocal(worldTarget.clone());
@@ -183,66 +144,71 @@ export default function Viewer({ session }: { session: any }) {
     });
 
     const overlay = document.getElementById('ar-overlay');
-    const button = ARButton.createButton(renderer, { 
-      requiredFeatures: ['local-floor'], 
-      optionalFeatures: ['dom-overlay'], 
-      domOverlay: { root: overlay! } 
-    });
-    document.body.appendChild(button);
+    if (overlay) {
+      const button = ARButton.createButton(renderer, { 
+        requiredFeatures: ['local-floor'], 
+        optionalFeatures: ['dom-overlay'], 
+        domOverlay: { root: overlay } 
+      });
+      document.body.appendChild(button);
+      
+      return () => {
+        renderer.setAnimationLoop(null);
+        renderer.dispose();
+        if (document.body.contains(button)) document.body.removeChild(button);
+      };
+    }
+  }, [!!session]);
 
-    return () => {
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      sceneRef.current.remove(ghost, light, controller);
-      if (document.body.contains(button)) document.body.removeChild(button);
-    };
-  }, [!!session]); // Only restart if session status changes
-
-  // --- Data Subscription ---
   useEffect(() => {
     if (position.lat === 0 || !session) return;
-    
-    const loadAndListen = async () => {
-      const { data } = await supabase.from('voxels').select('*')
-        .gte('lat', position.lat - DEGREE_THRESHOLD)
-        .lte('lat', position.lat + DEGREE_THRESHOLD);
-      
-      if (data) data.forEach(v => addVoxelLocally(v));
-
-      const channel = supabase.channel('voxels_realtime')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new))
-        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
-          const mesh = voxelsMap.current.get(p.old.id);
-          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(p.old.id); }
-        })
-        .subscribe();
-      return () => { supabase.removeChannel(channel); };
-    };
-    loadAndListen();
+    supabase.from('voxels').select('*')
+      .gte('lat', position.lat - DEGREE_THRESHOLD)
+      .lte('lat', position.lat + DEGREE_THRESHOLD)
+      .then(({ data }) => data?.forEach(addVoxelLocally));
   }, [position.lat, !!session]);
+
+  // Touch handlers for interaction blocking
+  const blockUI = () => { isInteractingWithUIRef.current = true; };
+  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 150); };
 
   return (
     <>
-      <div 
-        id="ar-overlay" 
-        className="fixed inset-0 pointer-events-none z-[9999]"
-      >
-        <div 
-          className="pointer-events-auto"
-          onPointerDown={() => { isInteractingWithUIRef.current = true; }} 
-          onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
-        >
-          <MainMenu session={session} rendererRef={rendererRef} />
-        </div>
+      {/* This ID is targeted by globals.css :xr-overlay.
+        It must be at the root of the body (returned here).
+      */}
+      <div id="ar-overlay" className="pointer-events-none">
+        {/* Inner container to provide a relative context for iOS absolute positioning
+        */}
+        <div className="relative w-full h-full pointer-events-none">
+          
+          <div 
+            className="pointer-events-auto" 
+            onTouchStart={blockUI} 
+            onTouchEnd={unblockUI} 
+            onMouseDown={blockUI} 
+            onMouseUp={unblockUI}
+          >
+            <MainMenu session={session} rendererRef={rendererRef} />
+          </div>
 
-        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
-          {isDrafting ? (
-            <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
-          ) : (
-            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
-          )}
+          <div 
+            className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto" 
+            onTouchStart={blockUI} 
+            onTouchEnd={unblockUI} 
+            onMouseDown={blockUI} 
+            onMouseUp={unblockUI}
+          >
+            {isDrafting ? (
+              <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
+            ) : (
+              <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
+            )}
+          </div>
+          
         </div>
       </div>
+
       <div ref={mountRef} className="fixed inset-0" />
     </>
   );
