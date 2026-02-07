@@ -32,7 +32,6 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
   const [authReady, setAuthReady] = useState(false);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
-  const [voxels, setVoxels] = useState<Voxel[]>([]);
 
   // ---------------- HELPERS ----------------
   const getGlobalOrigin = (lat: number, lng: number) => ({
@@ -55,7 +54,6 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
       -(voxel.lat - origin.lat) * METERS_PER_DEGREE
     );
     (mesh as any).user_id = voxel.user_id;
-    (mesh as any).dbId = voxel.id;
 
     sceneRef.current.add(mesh);
     voxelsMap.current.set(voxel.id, mesh);
@@ -140,7 +138,6 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
 
-    // Ghost cube
     const ghost = new THREE.Mesh(
       new THREE.BoxGeometry(0.1, 0.1, 0.1),
       new THREE.MeshPhongMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 })
@@ -148,10 +145,9 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
     scene.add(ghost);
     ghostRef.current = ghost;
 
-    // Controller (placement + deletion)
     const controller = renderer.xr.getController(0);
     controller.addEventListener('select', async () => {
-      if (!ghostRef.current) return;
+      if (!ghostRef.current || !session) return;
 
       const worldPos = new THREE.Vector3();
       ghostRef.current.getWorldPosition(worldPos);
@@ -176,16 +172,15 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
           lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (worldPos.x / lonScale),
           alt: worldPos.y,
-          color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString(),
+          color: selectedColor.hex, // Use the prop color
           user_id: session.user.id
         }]).select().single();
 
-        if (data) addVoxelLocally(data);
+        if (data) addVoxelLocally(data as Voxel);
       }
     });
     scene.add(controller);
 
-    // Animation loop
     renderer.setAnimationLoop(() => {
       camera.updateMatrixWorld();
       const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
@@ -197,19 +192,26 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
       renderer.render(scene, camera);
     });
 
-    // AR Button
-    const button = ARButton.createButton(renderer, { requiredFeatures: ['local-floor'] });
+    const overlay = document.getElementById('ar-overlay');
+    const button = ARButton.createButton(renderer, { 
+        requiredFeatures: ['local-floor'],
+        optionalFeatures: ['dom-overlay'],
+        domOverlay: { root: overlay! }
+    });
     document.body.appendChild(button);
 
-    // Resize
     const onResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); renderer.dispose(); button.remove(); };
-  }, [session]);
+    return () => { 
+        window.removeEventListener('resize', onResize); 
+        renderer.dispose(); 
+        button.remove(); 
+    };
+  }, [session, selectedColor]);
 
   // ---------------- REALTIME VOXELS ----------------
   useEffect(() => {
@@ -217,26 +219,27 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
 
     const fetchInitial = async () => {
       const { data } = await supabase.from('voxels').select('*');
-      data?.forEach(addVoxelLocally);
+      if (data) data.forEach((v: Voxel) => addVoxelLocally(v));
     };
 
     const channel = supabase.channel('voxels_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new))
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
-        const deletedId = p.old.id;
-        const mesh = voxelsMap.current.get(deletedId);
-        if (mesh) {
-          sceneRef.current.remove(mesh);
-          voxelsMap.current.delete(deletedId);
-        }
-      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, 
+        (p) => addVoxelLocally(p.new as Voxel))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, 
+        (p) => {
+          const deletedId = (p.old as { id: string }).id;
+          const mesh = voxelsMap.current.get(deletedId);
+          if (mesh) {
+            sceneRef.current.remove(mesh);
+            voxelsMap.current.delete(deletedId);
+          }
+        })
       .subscribe();
 
     fetchInitial();
-    return () => supabase.removeChannel(channel);
+    return () => { supabase.removeChannel(channel); };
   }, [position.lat, session]);
 
-  // ---------------- LOGIN UI ----------------
   if (!session) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-black text-white z-[10000]">
@@ -248,19 +251,20 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
     );
   }
 
-  // ---------------- MAIN UI ----------------
   return (
     <>
-      <div className="fixed top-4 left-4 z-50 flex flex-col gap-2">
-        <div className="bg-black/60 p-2 text-white text-[10px] rounded backdrop-blur-md border border-white/10">
-          GPS: {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
+      <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]">
+        <div className="fixed top-4 left-4 flex flex-col gap-2 pointer-events-auto">
+          <div className="bg-black/60 p-2 text-white text-[10px] rounded backdrop-blur-md border border-white/10">
+            GPS: {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
+          </div>
+          <button 
+            onClick={requestCompass}
+            className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg active:scale-95 transition-transform"
+          >
+            {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
+          </button>
         </div>
-        <button 
-          onClick={requestCompass}
-          className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg active:scale-95 transition-transform"
-        >
-          {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
-        </button>
       </div>
       <div ref={mountRef} className="fixed inset-0" />
     </>
