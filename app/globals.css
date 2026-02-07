@@ -10,7 +10,7 @@
 /* AR State: This selector is the 'silver bullet' for iOS WebXR Viewer.
    It forces the HTML to the top layer when the AR session starts.
 */
-:where(:xr-overlay) #ar-overlay {
+:where(::xr-overlay) #ar-overlay {
   display: block !important;
   position: absolute;
   inset: 0;
