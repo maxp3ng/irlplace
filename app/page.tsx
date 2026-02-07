@@ -4,6 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { Canvas } from "@react-three/fiber";
 import { Box, OrbitControls, Grid } from "@react-three/drei";
 import { VoxelWorld } from "@/components/VoxelWorld";
+import Viewer from "../components/Viewer"
 import Icons from "@/components/Icons";
 import {WelcomeScreen,PermissionItem,PermissionScreen,PlacementControls} from "@/components/UIComponents";
 
@@ -78,6 +79,7 @@ export default function App() {
     <div className="relative h-screen w-full bg-black overflow-hidden select-none touch-none font-sans">
       <div className="absolute inset-0">
         {/* Imported Component */}
+        <Viewer/>
         <VoxelWorld 
           voxels={voxels}
           isPlacing={isPlacing}
@@ -116,4 +118,5 @@ export default function App() {
       </div>
     </div>
   );
+
 }
