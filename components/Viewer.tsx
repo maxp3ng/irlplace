@@ -28,11 +28,40 @@ export default function Viewer() {
   useEffect(() => {
     if (!mountRef.current) return;
 
-    let renderer: THREE.WebGLRenderer;
-    let scene: THREE.Scene;
-    let camera: THREE.PerspectiveCamera;
-    let controller: THREE.XRTargetRaySpace;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(
+      70,
+      window.innerWidth / window.innerHeight,
+      0.01,
+      20
+    );
 
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.xr.enabled = true;
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    mountRef.current.appendChild(renderer.domElement);
+
+    // --- Light ---
+    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+    light.position.set(0.5, 1, 0.25);
+    scene.add(light);
+
+    // --- AR Button ---
+    document.body.appendChild(
+      ARButton.createButton(renderer, {
+        requiredFeatures: ["hit-test", "depth-sensing"],
+        depthSensing: {
+          usagePreference: ["cpu-optimized", "gpu-optimized"],
+          dataFormatPreference: ["float32", "luminance-alpha"], // prioritize float32 first
+        },
+      })
+    );
+
+    // --- Cone geometry ---
+    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(Math.PI / 2);
+
+    // --- Depth occlusion shader ---
     const depthUniforms = {
       uDepthTexture: { value: null as THREE.Texture | null },
       uRawValueToMeters: { value: 0 },
@@ -53,6 +82,7 @@ export default function Viewer() {
         uniform float uRawValueToMeters;
 
         void main() {
+          if(uDepthTexture == null) discard;
           vec4 depth = texture2D(uDepthTexture, vUv);
           if(depth.r <= 0.0) discard;
           gl_FragColor = vec4(0.0);
@@ -61,46 +91,13 @@ export default function Viewer() {
       colorWrite: false,
     });
 
-    // --- Scene & camera ---
-    scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(
-      70,
-      window.innerWidth / window.innerHeight,
-      0.01,
-      20
-    );
-
-    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
-    light.position.set(0.5, 1, 0.25);
-    scene.add(light);
-
-    // --- Renderer ---
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.xr.enabled = true;
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    mountRef.current.appendChild(renderer.domElement);
-
-    // --- AR Button ---
-    document.body.appendChild(
-      ARButton.createButton(renderer, {
-        requiredFeatures: ["hit-test", "depth-sensing"],
-        depthSensing: {
-          usagePreference: ["cpu-optimized", "gpu-optimized"],
-           dataFormatPreference: ["luminance-alpha", "float32"],
-        },
-      })
-    );
-
-    // --- Geometry & occlusion ---
-    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(Math.PI / 2);
-
     const occlusionMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), occlusionMaterial);
     occlusionMesh.renderOrder = -1;
     scene.add(occlusionMesh);
 
-    // --- Spawn cones ---
-    function onSelect() {
+    // --- Controller ---
+    const controller = renderer.xr.getController(0);
+    controller.addEventListener("select", () => {
       const material = new THREE.MeshPhongMaterial({ color: 0xffffff * Math.random() });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
@@ -110,13 +107,10 @@ export default function Viewer() {
       (mesh as any).gps = position;
 
       scene.add(mesh);
-    }
-
-    controller = renderer.xr.getController(0);
-    controller.addEventListener("select", onSelect);
+    });
     scene.add(controller);
 
-    // --- Resize handler ---
+    // --- Resize ---
     function onWindowResize() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
@@ -128,40 +122,50 @@ export default function Viewer() {
     renderer.setAnimationLoop((time, frame) => {
       if (frame) {
         const referenceSpace = renderer.xr.getReferenceSpace();
-        const session = renderer.xr.getSession();
-
         const pose = frame.getViewerPose(referenceSpace!);
-        if (pose && session) {
+
+        if (pose) {
           const view = pose.views[0];
-          // @ts-ignore
-          const depthData = frame.getDepthInformation(view);
-          if (depthData && depthData.data) {
-            let type: THREE.TextureDataType;
 
-            if (depthData.data instanceof Uint16Array) {
-              type = THREE.UnsignedShortType;
-            } else if (depthData.data instanceof Float32Array) {
-              type = THREE.FloatType;
-            } else {
-              console.warn("Unknown depthData type, skipping occlusion", depthData.data);
-              return;
-            }
+          // Try WebXR GPU depth texture first
+          const session = renderer.xr.getSession();
+          let depthTexture: THREE.Texture | null = null;
 
-            depthUniforms.uDepthTexture.value = new THREE.DataTexture(
-              depthData.data,
-              depthData.width,
-              depthData.height,
-              THREE.RedFormat,
-              type
-            );
-
-            depthUniforms.uDepthTexture.value.needsUpdate = true;
-            depthUniforms.uRawValueToMeters.value = depthData.rawValueToMeters;
-          } else {
-            // Depth not supported on this device
-            depthUniforms.uDepthTexture.value = null;
+          if ((session as any).getDepthUsage) {
+            // Some devices may support XRWebGLBinding
+            try {
+              const binding = new (window as any).XRWebGLBinding(session, renderer.getContext());
+              const gpuDepth = binding.getDepthTexture(view);
+              if (gpuDepth) {
+                depthTexture = gpuDepth;
+              }
+            } catch {}
           }
 
+          // If GPU texture not available, fall back to CPU depth
+          if (!depthTexture) {
+            // @ts-ignore
+            const depthData = frame.getDepthInformation?.(view);
+            if (depthData && depthData.data) {
+              let type: THREE.TextureDataType;
+              if (depthData.data instanceof Uint16Array) type = THREE.UnsignedShortType;
+              else if (depthData.data instanceof Float32Array) type = THREE.FloatType;
+              else type = THREE.FloatType; // fallback
+
+              depthTexture = new THREE.DataTexture(
+                depthData.data,
+                depthData.width,
+                depthData.height,
+                THREE.RedFormat,
+                type
+              );
+              depthTexture.needsUpdate = true;
+              depthUniforms.uRawValueToMeters.value = depthData.rawValueToMeters;
+            }
+          }
+
+          depthUniforms.uDepthTexture.value = depthTexture;
+          occlusionMesh.visible = depthTexture !== null;
         }
       }
 
