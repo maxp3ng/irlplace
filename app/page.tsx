@@ -76,7 +76,7 @@ export default function App() {
           // selectedColor={selectedColor}
         />
       </div>
-
+{/* 
       <div className="relative z-10 h-screen w-full bg-transparent overflow-hidden select-none font-sans">
         <div className="absolute inset-0 pointer-events-none">
           <VoxelWorld 
@@ -107,7 +107,7 @@ export default function App() {
             )}
           </div>
         </div>
-      </div>
+      </div> */}
     </>
   );
 }
