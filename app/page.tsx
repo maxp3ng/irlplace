@@ -57,7 +57,7 @@ export default function App() {
   return (
     <>
       {/* 3D AR Layer */}
-      <div className="fixed inset-0 z-0 bg-black">
+      <div className="fixed inset-0 z-[9999] bg-black">
         <Viewer 
           selectedColor={selectedColor}
         />

@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
+import { 
+  WelcomeScreen, 
+  PermissionScreen, 
+  PlacementControls, 
+  ColorPicker,
+  COLORS 
+} from '@/components/UIComponents';
 
 const GRID_SIZE = 0.001;
 const METERS_PER_DEGREE = 111111;
@@ -27,6 +34,8 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
   const ghostRef = useRef<THREE.Mesh | null>(null);
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
+  // const [selectedColor, setSelectedColor] = useState(COLORS[0]);
+
 
   const [session, setSession] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
