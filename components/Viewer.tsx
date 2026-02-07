@@ -143,7 +143,7 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
       if (!currentIds.has(id)) {
         scene.remove(mesh);
         voxelsMap.current.delete(id);
-      }
+          }
     });
   }, [voxels, position]);
 
