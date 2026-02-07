@@ -257,6 +257,15 @@ useEffect(() => {
         Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
         Math.round(targetPos.z / VOXEL_SNAP) * VOXEL_SNAP
       );
+      camera.getWorldPosition(camPos);
+
+      const MAX_VISIBLE_DISTANCE = 10; 
+      voxelsMap.current.forEach(mesh => {
+        const dist = mesh.position.distanceTo(camPos);
+
+        // hide/show instead of deleting
+        mesh.visible = dist <= MAX_VISIBLE_DISTANCE;
+      });
       renderer.render(scene, camera);
     });
 
