@@ -87,7 +87,7 @@ export default function Viewer() {
         requiredFeatures: ["hit-test", "depth-sensing"],
         depthSensing: {
           usagePreference: ["cpu-optimized", "gpu-optimized"],
-          dataFormatPreference: ["float32", "red"],
+           dataFormatPreference: ["luminance-alpha", "float32"],
         },
       })
     );
