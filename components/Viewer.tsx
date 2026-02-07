@@ -5,6 +5,8 @@ import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
+import LeaderboardMenu from '@/components/LeaderboardMenu'
+
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
@@ -210,6 +212,7 @@ export default function Viewer({ session }: { session: any }) {
     };
     loadAndListen();
   }, [position.lat, session]);
+      <LeaderboardMenu session={session} />
        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
