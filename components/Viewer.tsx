@@ -5,216 +5,242 @@ import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { supabase } from '@/utils/supabase';
 
-const GRID_SIZE = 0.001; 
+const GRID_SIZE = 0.001;
 const METERS_PER_DEGREE = 111111;
-const VOXEL_SNAP = 0.1; // 10cm snapping
+const VOXEL_SNAP = 0.1;
+const Z_OFFSET = -1.2;
 const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
 
 export default function GlobalARViewer() {
+
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   const ghostRef = useRef<THREE.Mesh | null>(null);
+  const isAligned = useRef(false);
 
   const [session, setSession] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
-  
+
   const [position, setPosition] = useState({ lat: 0, lng: 0, alt: 0 });
   const latestPos = useRef({ lat: 0, lng: 0, alt: 0 });
 
-  const getGlobalOrigin = (lat: number, lng: number) => ({
+  // ---------------- HELPERS ----------------
+  const getGlobalOrigin = (lat:number,lng:number)=>({
     lat: Math.floor(lat / GRID_SIZE) * GRID_SIZE,
     lng: Math.floor(lng / GRID_SIZE) * GRID_SIZE,
   });
 
-  // ---------------- GOOGLE AUTH (PRODUCTION SAFE) ----------------
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
+  const addVoxelLocally = (voxel:any) => {
+    if (voxelsMap.current.has(voxel.id)) return;
+
+    const origin = getGlobalOrigin(latestPos.current.lat, latestPos.current.lng);
+    const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI/180);
+
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1,0.1,0.1),
+      new THREE.MeshPhongMaterial({ color: voxel.color })
+    );
+
+    mesh.position.set(
+      (voxel.lon - origin.lng) * lonScale,
+      voxel.alt,
+      -(voxel.lat - origin.lat) * METERS_PER_DEGREE
+    );
+
+    sceneRef.current.add(mesh);
+    voxelsMap.current.set(voxel.id, mesh);
+  };
+
+  // ---------------- GOOGLE AUTH ----------------
+  useEffect(()=>{
+    const script=document.createElement("script");
+    script.src="https://accounts.google.com/gsi/client";
+    script.async=true;
     document.body.appendChild(script);
 
-    const wait = setInterval(() => {
-      // @ts-ignore
-      if (window.google?.accounts?.id) {
+    const wait=setInterval(()=>{
+      //@ts-ignore
+      if(window.google?.accounts?.id){
         clearInterval(wait);
 
-        // @ts-ignore
+        //@ts-ignore
         window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
-          callback: async (response: any) => {
-            const { data, error } = await supabase.auth.signInWithIdToken({
-              provider: "google",
-              token: response.credential,
+          client_id:GOOGLE_CLIENT_ID,
+          callback:async(res:any)=>{
+            const {data,error}=await supabase.auth.signInWithIdToken({
+              provider:"google",
+              token:res.credential
             });
-            if (!error) setSession(data.session);
+            if(!error) setSession(data.session);
           },
-          auto_select: false,
-          cancel_on_tap_outside: true,
-          use_fedcm_for_prompt: true,
+          use_fedcm_for_prompt:true,
         });
 
-        // @ts-ignore
+        //@ts-ignore
         window.google.accounts.id.renderButton(
           document.getElementById("googleButton"),
-          { theme: "outline", size: "large", text: "signin_with" }
+          { theme:"outline", size:"large", text:"signin_with" }
         );
 
         setAuthReady(true);
       }
-    }, 100);
+    },100);
 
-    return () => clearInterval(wait);
-  }, []);
+    supabase.auth.getSession().then(({data})=>setSession(data.session));
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-    });
+    const {data:listener}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s));
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => {
-      setSession(s);
-    });
-
-    return () => listener.subscription.unsubscribe();
-  }, []);
+    return ()=>{
+      clearInterval(wait);
+      listener.subscription.unsubscribe();
+    }
+  },[]);
 
   // ---------------- GEOLOCATION ----------------
-  useEffect(() => {
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude, alt: pos.coords.altitude || 0 };
-        setPosition(coords);
-        latestPos.current = coords;
-      },
-      null,
-      { enableHighAccuracy: true }
-    );
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, []);
+  useEffect(()=>{
+    const watchId=navigator.geolocation.watchPosition(pos=>{
+      const coords={
+        lat:pos.coords.latitude,
+        lng:pos.coords.longitude,
+        alt:pos.coords.altitude||0
+      };
+      latestPos.current=coords;
+      setPosition(coords);
+    },null,{enableHighAccuracy:true});
 
-  // ---------------- THREE / AR SETUP ----------------
-  useEffect(() => {
-    if (!mountRef.current || !session) return;
+    return ()=>navigator.geolocation.clearWatch(watchId);
+  },[]);
 
-    const scene = sceneRef.current;
-    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 1000);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.xr.enabled = true;
-    renderer.setSize(window.innerWidth, window.innerHeight);
+  // ---------------- COMPASS ----------------
+  const requestCompass = async ()=>{
+    const handleOrientation=(event:DeviceOrientationEvent)=>{
+      const heading=(event as any).webkitCompassHeading||(360-(event.alpha||0));
+      if(heading!==undefined&&!isAligned.current){
+        sceneRef.current.rotation.y=-THREE.MathUtils.degToRad(heading);
+        isAligned.current=true;
+      }
+    };
+
+    if(typeof (DeviceOrientationEvent as any).requestPermission==="function"){
+      const perm=await (DeviceOrientationEvent as any).requestPermission();
+      if(perm==="granted"){
+        window.addEventListener('deviceorientationabsolute',handleOrientation,true);
+      }
+    }else{
+      window.addEventListener('deviceorientationabsolute',handleOrientation,true);
+    }
+  };
+
+  // ---------------- THREE / AR ENGINE ----------------
+  useEffect(()=>{
+    if(!mountRef.current || !session) return;
+
+    const scene=sceneRef.current;
+    const camera=new THREE.PerspectiveCamera(70,window.innerWidth/window.innerHeight,0.01,1000);
+
+    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+    renderer.xr.enabled=true;
+    renderer.setSize(window.innerWidth,window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
+    scene.add(new THREE.HemisphereLight(0xffffff,0xbbbbff,3));
 
-    const ghostGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-    const ghostMat = new THREE.MeshPhongMaterial({ 
-      color: 0xffffff, 
-      transparent: true, 
-      opacity: 0.5,
-      wireframe: true 
-    });
-    const ghost = new THREE.Mesh(ghostGeo, ghostMat);
+    // Ghost cube
+    const ghost=new THREE.Mesh(
+      new THREE.BoxGeometry(0.101,0.101,0.101),
+      new THREE.MeshPhongMaterial({color:0x00ff00,transparent:true,opacity:0.4})
+    );
     scene.add(ghost);
-    ghostRef.current = ghost;
+    ghostRef.current=ghost;
 
-    window.addEventListener('deviceorientationabsolute', (event: any) => {
-      if (event.alpha !== null && !scene.userData.aligned) {
-        scene.rotation.y = THREE.MathUtils.degToRad(event.alpha);
-        scene.userData.aligned = true;
-      }
-    }, { once: true });
+    // Controller placement
+    const controller=renderer.xr.getController(0);
+    controller.addEventListener('select',async()=>{
+      if(!ghostRef.current) return;
 
-    const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', async () => {
-      if (!session) return;
-      if (latestPos.current.lat === 0 || !ghostRef.current) return;
+      const worldPos=new THREE.Vector3();
+      ghostRef.current.getWorldPosition(worldPos);
 
-      const worldPos = ghostRef.current.position;
-      const origin = getGlobalOrigin(latestPos.current.lat, latestPos.current.lng);
-      const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-
-      const newLat = origin.lat - (worldPos.z / METERS_PER_DEGREE);
-      const newLon = origin.lng + (worldPos.x / lonScale);
+      const origin=getGlobalOrigin(latestPos.current.lat,latestPos.current.lng);
+      const lonScale=METERS_PER_DEGREE*Math.cos(origin.lat*Math.PI/180);
 
       await supabase.from('voxels').insert([{
-        lat: newLat,
-        lon: newLon,
+        lat: origin.lat-(worldPos.z/METERS_PER_DEGREE),
+        lon: origin.lng+(worldPos.x/lonScale),
         alt: worldPos.y,
-        color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString(),
-        user_id: session.user.id
+        color:"#"+new THREE.Color(Math.random()*0xffffff).getHexString(),
+        user_id:session.user.id
       }]);
     });
     scene.add(controller);
 
-    const Z_OFFSET = 1.5;
+    renderer.setAnimationLoop(()=>{
+      if(renderer.xr.isPresenting && ghostRef.current){
+        camera.updateMatrixWorld();
+        const target=new THREE.Vector3(0,0,Z_OFFSET).applyMatrix4(camera.matrixWorld);
 
-    renderer.setAnimationLoop(() => {
-      if (renderer.xr.isPresenting && ghostRef.current) {
-        const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         ghostRef.current.position.set(
-          Math.round(targetPos.x / VOXEL_SNAP) * VOXEL_SNAP,
-          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          Math.round(targetPos.z / VOXEL_SNAP) * VOXEL_SNAP
+          Math.round(target.x/VOXEL_SNAP)*VOXEL_SNAP,
+          Math.round(target.y/VOXEL_SNAP)*VOXEL_SNAP,
+          Math.round(target.z/VOXEL_SNAP)*VOXEL_SNAP
         );
       }
-      renderer.render(scene, camera);
+      renderer.render(scene,camera);
     });
 
-    const button = ARButton.createButton(renderer);
-    document.body.appendChild(button);
+    const btn=ARButton.createButton(renderer);
+    document.body.appendChild(btn);
 
-    return () => {
+    return ()=>{
       renderer.dispose();
-      button.remove();
-    };
-  }, [session]);
+      btn.remove();
+    }
 
-  // ---------------- VOXEL SYNC ----------------
-  useEffect(() => {
-    if (position.lat === 0 || !session) return;
-    const origin = getGlobalOrigin(position.lat, position.lng);
-    const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
+  },[session]);
 
-    const syncVoxels = async () => {
-      const { data } = await supabase.from('voxels').select('*');
-      if (!data) return;
+  // ---------------- REALTIME SYNC ----------------
+  useEffect(()=>{
+    if(position.lat===0 || !session) return;
 
-      data.forEach((voxel) => {
-        if (!voxelsMap.current.has(voxel.id)) {
-          const mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(0.1, 0.1, 0.1),
-            new THREE.MeshPhongMaterial({ color: voxel.color })
-          );
-          mesh.position.set(
-            (voxel.lon - origin.lng) * lonScale,
-            voxel.alt,
-            -(voxel.lat - origin.lat) * METERS_PER_DEGREE
-          );
-          sceneRef.current.add(mesh);
-          voxelsMap.current.set(voxel.id, mesh);
-        }
-      });
+    const fetchInitial=async()=>{
+      const {data}=await supabase.from('voxels').select('*');
+      data?.forEach(addVoxelLocally);
     };
 
-    const channel = supabase.channel('global_voxels')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'voxels' }, syncVoxels)
+    const channel=supabase.channel('voxels_realtime')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'voxels'},
+      payload=>addVoxelLocally(payload.new))
       .subscribe();
 
-    syncVoxels();
-    return () => { supabase.removeChannel(channel); };
-  }, [position.lat, session]);
+    fetchInitial();
+    return ()=>supabase.removeChannel(channel);
+  },[position.lat,session]);
 
-  if (!session) {
-    return (
+  // ---------------- LOGIN UI ----------------
+  if(!session){
+    return(
       <div className="fixed inset-0 flex items-center justify-center bg-black text-white">
         <div>
-          <div id="googleButton" />
-          {!authReady && <p className="mt-2 text-sm opacity-70">Loading Google Sign‑In…</p>}
+          <div id="googleButton"/>
+          {!authReady && <p className="mt-2 text-sm opacity-70">Loading Google Sign-In…</p>}
         </div>
       </div>
     );
   }
 
-  return <div ref={mountRef} className="fixed inset-0" />;
+  // ---------------- MAIN UI ----------------
+  return(
+    <>
+      <div className="fixed top-4 left-4 z-50">
+        <button
+          onClick={requestCompass}
+          className="bg-white/90 text-black text-[10px] font-bold px-3 py-2 rounded shadow-lg"
+        >
+          {isAligned.current ? "✅ COMPASS ALIGNED" : "🧭 ALIGN TO NORTH"}
+        </button>
+      </div>
+      <div ref={mountRef} className="fixed inset-0"/>
+    </>
+  );
 }
