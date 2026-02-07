@@ -231,7 +231,6 @@ export default function Viewer({ session }: { session: any }) {
           onCaptureScreenshot={() => {
             if (!rendererRef.current) return;
             // Hide UI temporarily
-            setShowUI(false);
             requestAnimationFrame(() => {
               const canvas = rendererRef.current.domElement;
               canvas.toBlob(async blob => {
@@ -240,7 +239,6 @@ export default function Viewer({ session }: { session: any }) {
                 await supabase.storage.from('gallery').upload(fileName, blob);
                 const publicUrl = supabase.storage.from('gallery').getPublicUrl(fileName).data.publicUrl;
                 await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: publicUrl }]);
-                setShowUI(true);
               });
             });
           }}
