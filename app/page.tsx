@@ -57,14 +57,14 @@ export default function App() {
   return (
     <>
       {/* 3D AR Layer */}
-      <div className="fixed inset-0 z-[9999] bg-black">
+      <div className="fixed inset-0 z-0 bg-black">
         <Viewer 
           selectedColor={selectedColor}
         />
       </div>
 
       {/* UI Layer */}
-      <div className="relative z-10 h-screen w-full bg-transparent overflow-hidden select-none font-sans pointer-events-none">
+      <div className="relative z-[9999] h-screen w-full bg-transparent overflow-hidden select-none font-sans pointer-events-none">
         
         {/* Top HUD */}
         <div className="absolute top-0 w-full pt-14 px-6 flex justify-between">
