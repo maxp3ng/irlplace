@@ -135,33 +135,33 @@ export default function Viewer() {
           const view = pose.views[0];
           // @ts-ignore
           const depthData = frame.getDepthInformation(view);
-          if (depthData) {
-            let array: Uint16Array | Float32Array;
+          if (depthData && depthData.data) {
             let type: THREE.TextureDataType;
 
-            // Detect type
-            if (depthData.data instanceof Float32Array) {
-              array = depthData.data;
-              type = THREE.FloatType;
-            } else if (depthData.data instanceof Uint16Array) {
-              array = depthData.data;
+            if (depthData.data instanceof Uint16Array) {
               type = THREE.UnsignedShortType;
+            } else if (depthData.data instanceof Float32Array) {
+              type = THREE.FloatType;
             } else {
-              console.warn("Unknown depthData.data type:", depthData.data);
+              console.warn("Unknown depthData type, skipping occlusion", depthData.data);
               return;
             }
 
             depthUniforms.uDepthTexture.value = new THREE.DataTexture(
-                                                array,
-                                                depthData.width,
-                                                depthData.height,
-                                                THREE.RedFormat,
-                                                type
+              depthData.data,
+              depthData.width,
+              depthData.height,
+              THREE.RedFormat,
+              type
             );
 
             depthUniforms.uDepthTexture.value.needsUpdate = true;
             depthUniforms.uRawValueToMeters.value = depthData.rawValueToMeters;
-            }
+          } else {
+            // Depth not supported on this device
+            depthUniforms.uDepthTexture.value = null;
+          }
+
         }
       }
 
