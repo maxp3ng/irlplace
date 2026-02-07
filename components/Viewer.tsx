@@ -79,37 +79,81 @@ export default function Viewer() {
   };
 
   // ---------------- GOOGLE SIGN-IN ----------------
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.onload = () => {
-      // @ts-ignore
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: async (res: any) => {
+	// ---------------- GOOGLE SIGN-IN (STABLE VERSION) ----------------
+useEffect(() => {
+  let interval: number | null = null;
+
+  const script = document.createElement("script");
+  script.src = "https://accounts.google.com/gsi/client";
+  script.async = true;
+  document.body.appendChild(script);
+
+  const waitForGoogle = () => {
+    // @ts-ignore
+    if (!window.google?.accounts?.id) return;
+
+    if (interval) window.clearInterval(interval);
+
+    // @ts-ignore
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      use_fedcm_for_prompt: true,
+      callback: async (res: any) => {
+        try {
           const { data, error } = await supabase.auth.signInWithIdToken({
             provider: "google",
             token: res.credential,
           });
           if (!error) setSession(data.session);
-        },
-        use_fedcm_for_prompt: true,
+        } catch (e) {
+          console.error("Supabase sign-in error:", e);
+        }
+      },
+    });
+
+    const render = () => {
+      const btn = document.getElementById("googleButton");
+      if (!btn) {
+        requestAnimationFrame(render);
+        return;
+      }
+
+      // clear previous content so it doesn't vanish randomly
+      btn.innerHTML = "";
+
+      // @ts-ignore
+      window.google.accounts.id.renderButton(btn, {
+        theme: "outline",
+        size: "large",
+        text: "signin_with",
+        shape: "rectangular",
+        width: 260,
       });
-      const renderButton = () => {
-        const btn = document.getElementById("googleButton");
-        if (btn) {
-          // @ts-ignore
-          window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large" });
-        } else requestAnimationFrame(renderButton);
-      };
-      renderButton();
+
       setAuthReady(true);
     };
-    document.body.appendChild(script);
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    return () => { if (document.body.contains(script)) document.body.removeChild(script); };
-  }, []);
+
+    render();
+  };
+
+  // Poll until GIS is ready (MOST STABLE across devices)
+  interval = window.setInterval(waitForGoogle, 120);
+
+  // Restore existing session if already logged in
+  supabase.auth.getSession().then(({ data }) => {
+    if (data.session) setSession(data.session);
+  });
+
+  const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => {
+    setSession(s);
+  });
+
+  return () => {
+    if (interval) window.clearInterval(interval);
+    listener.subscription.unsubscribe();
+    script.remove();
+  };
+}, []);
 
   // ---------------- GEOLOCATION ----------------
   useEffect(() => {
