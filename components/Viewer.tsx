@@ -3,149 +3,104 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
+import { supabase } from "@/utils/supabase"; // Adjust path as needed
 
 export default function Viewer() {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const boxesMap = useRef<Map<string, THREE.Mesh>>(new Map());
 
   useEffect(() => {
     if (!mountRef.current) return;
 
-    let renderer: THREE.WebGLRenderer;
-    let scene: THREE.Scene;
-    let camera: THREE.PerspectiveCamera;
-    let controller: THREE.XRTargetRaySpace;
-
-    // Depth texture uniforms (comes from XRFrame)
-    const depthUniforms = {
-      uDepthTexture: { value: null as THREE.Texture | null },
-      uRawValueToMeters: { value: 0 },
-    };
-
-    const occlusionMaterial = new THREE.ShaderMaterial({
-      uniforms: depthUniforms,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        uniform sampler2D uDepthTexture;
-        uniform float uRawValueToMeters;
-
-        void main() {
-          vec4 depth = texture2D(uDepthTexture, vUv);
-          if(depth.r <= 0.0) discard;
-
-          // write only depth (no color)
-          gl_FragColor = vec4(0.0);
-        }
-      `,
-      colorWrite: false,
-    });
-
-    // Scene
-    scene = new THREE.Scene();
-
-    camera = new THREE.PerspectiveCamera(
-      70,
-      window.innerWidth / window.innerHeight,
-      0.01,
-      20
-    );
-
-    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
-    light.position.set(0.5, 1, 0.25);
-    scene.add(light);
-
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // --- Scene Setup ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
-    renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
-
     mountRef.current.appendChild(renderer.domElement);
 
-    document.body.appendChild(
-      ARButton.createButton(renderer, {
-        requiredFeatures: ["hit-test", "depth-sensing"],
-        depthSensing: {
-          usagePreference: ["cpu-optimized", "gpu-optimized"],
-          dataFormatPreference: ["luminance-alpha", "float32"],
-        },
-      })
-    );
+    const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+    const raycaster = new THREE.Raycaster();
+    const tempMatrix = new THREE.Matrix4();
 
-    // Cone geometry
-    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(
-      Math.PI / 2
-    );
-
-    // Fullscreen quad used for occlusion
-    const occlusionMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(2, 2),
-      occlusionMaterial
-    );
-    occlusionMesh.renderOrder = -1;
-    scene.add(occlusionMesh);
-
-    function onSelect() {
-      const material = new THREE.MeshPhongMaterial({
-        color: 0xffffff * Math.random(),
-      });
-
+    // --- Helpers ---
+    const addBoxToScene = (data: any) => {
+      if (boxesMap.current.has(data.id)) return;
+      const material = new THREE.MeshPhongMaterial({ color: data.color });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
-      mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
+      mesh.position.fromArray(data.position);
+      mesh.quaternion.fromArray(data.rotation);
+      mesh.userData.id = data.id; // Store ID for raycasting/deletion
       scene.add(mesh);
-    }
+      boxesMap.current.set(data.id, mesh);
+    };
 
-    controller = renderer.xr.getController(0);
-    controller.addEventListener("select", onSelect);
+    const removeBoxFromScene = (id: string) => {
+      const mesh = boxesMap.current.get(id);
+      if (mesh) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+        boxesMap.current.delete(id);
+      }
+    };
+
+    // --- Supabase Sync ---
+    const fetchAndSubscribe = async () => {
+      const { data } = await supabase.from("boxes").select("*");
+      data?.forEach(addBoxToScene);
+
+      supabase
+        .channel("schema-db-changes")
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "boxes" }, 
+          (payload) => addBoxToScene(payload.new)
+        )
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "boxes" }, 
+          (payload) => removeBoxFromScene(payload.old.id)
+        )
+        .subscribe();
+    };
+
+    fetchAndSubscribe();
+
+    // --- Interaction ---
+    const controller = renderer.xr.getController(0);
     scene.add(controller);
 
-    function onWindowResize() {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    }
+    controller.addEventListener("select", async () => {
+      // 1. Check if we hit an existing box to delete it
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-    window.addEventListener("resize", onWindowResize);
+      const intersects = raycaster.intersectObjects(Array.from(boxesMap.current.values()));
 
-    renderer.setAnimationLoop((time, frame) => {
-      if (frame) {
-        const referenceSpace = renderer.xr.getReferenceSpace();
-        const session = renderer.xr.getSession();
-
-        const pose = frame.getViewerPose(referenceSpace!);
-        if (pose && session) {
-          const view = pose.views[0];
-
-          // @ts-ignore (WebXR depth API)
-          const depthData = frame.getDepthInformation(view);
-
-          if (depthData) {
-            depthUniforms.uDepthTexture.value = new THREE.DataTexture(
-              new Uint16Array(depthData.data),
-              depthData.width,
-              depthData.height,
-              THREE.RedFormat
-            );
-
-            depthUniforms.uDepthTexture.value.needsUpdate = true;
-            depthUniforms.uRawValueToMeters.value =
-              depthData.rawValueToMeters;
-          }
-        }
+      if (intersects.length > 0) {
+        const hitId = intersects[0].object.userData.id;
+        await supabase.from("boxes").delete().eq("id", hitId);
+      } else {
+        // 2. Otherwise, add a new box
+        const pos = new THREE.Vector3(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
+        const quat = new THREE.Quaternion().setFromRotationMatrix(controller.matrixWorld);
+        
+        await supabase.from("boxes").insert({
+          position: pos.toArray(),
+          rotation: quat.toArray(),
+          color: `#${new THREE.Color(Math.random() * 0xffffff).getHexString()}`
+        });
       }
+    });
 
+    // --- Animation Loop ---
+    // (Keep your existing Depth Sensing logic here as well)
+    renderer.setAnimationLoop((time, frame) => {
       renderer.render(scene, camera);
     });
 
     return () => {
-      window.removeEventListener("resize", onWindowResize);
       renderer.dispose();
+      supabase.removeAllChannels();
     };
   }, []);
 
