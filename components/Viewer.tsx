@@ -23,17 +23,19 @@ export default function Viewer({ session }: { session: any }) {
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
-  const sessionRef = useRef<any>(session); // Initialize with prop
+  const sessionRef = useRef<any>(session);
 
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
-  // Sync refs
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
-  useEffect(() => { selectedColorRef.current = selectedColor; }, [selectedColor]);
   useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => {
+    selectedColorRef.current = selectedColor;
+    if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
+  }, [selectedColor]);
 
   const geoConstants = useMemo(() => {
     if (!position.lat) return null;
@@ -43,7 +45,6 @@ export default function Viewer({ session }: { session: any }) {
 
   const addVoxelLocally = (voxel: any) => {
     if (voxelsMap.current.has(voxel.id)) return;
-    
     const origin = originGps.current || { lat: voxel.lat, lng: voxel.lon };
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
     const targetX = (voxel.lon - origin.lng) * lonScale;
@@ -53,9 +54,7 @@ export default function Viewer({ session }: { session: any }) {
     voxelsMap.current.forEach((m) => {
       if (Math.abs(m.position.x - targetX) < 0.05 && 
           Math.abs(m.position.z - targetZ) < 0.05 && 
-          Math.abs(m.position.y - voxel.alt) < 0.05) {
-        exists = true;
-      }
+          Math.abs(m.position.y - voxel.alt) < 0.05) exists = true;
     });
     if (exists) return;
 
@@ -75,11 +74,9 @@ export default function Viewer({ session }: { session: any }) {
 
   const handleConfirm = async () => {
     if (!ghostRef.current || !sessionRef.current || !originGps.current) return;
-
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-
     const tempId = `temp-${Date.now()}`;
     const voxelData = {
       lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
@@ -91,7 +88,6 @@ export default function Viewer({ session }: { session: any }) {
 
     addVoxelLocally({ ...voxelData, id: tempId });
     const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
-    
     if (data) {
       const mesh = voxelsMap.current.get(tempId);
       if (mesh) {
@@ -129,13 +125,15 @@ export default function Viewer({ session }: { session: any }) {
   // --- AR ENGINE ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
+
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 1000);
-    sceneRef.current.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
+    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+    sceneRef.current.add(light);
 
     const ghost = new THREE.Mesh(
       new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
@@ -144,21 +142,24 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
+    // FIX: Re-adding the select listener so you can trigger drafting
+    const controller = renderer.xr.getController(0);
+    const onSelect = () => {
+        if (isInteractingWithUIRef.current) return;
+        setIsDrafting(true);
+    };
+    controller.addEventListener('select', onSelect);
+    sceneRef.current.add(controller);
+
     renderer.setAnimationLoop(() => {
       if (!isDraftingRef.current && geoConstants && originGps.current) {
         camera.updateMatrixWorld();
         const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         sceneRef.current.worldToLocal(targetPos);
-
         const { lonScale, latRatio, lonRatio } = geoConstants;
         const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
         const snapLon = Math.round((targetPos.x / lonScale) * lonRatio) / lonRatio;
-
-        ghostRef.current?.position.set(
-          snapLon * lonScale,
-          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          -snapLat * METERS_PER_DEGREE
-        );
+        ghostRef.current?.position.set(snapLon * lonScale, Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP, -snapLat * METERS_PER_DEGREE);
       }
       renderer.render(sceneRef.current, camera);
     });
@@ -172,11 +173,17 @@ export default function Viewer({ session }: { session: any }) {
     document.body.appendChild(button);
 
     return () => {
+        // CLEANUP: Remove specifically created objects to avoid "Double Ghost"
+        controller.removeEventListener('select', onSelect);
+        sceneRef.current.remove(ghost);
+        sceneRef.current.remove(light);
+        sceneRef.current.remove(controller);
         renderer.setAnimationLoop(null);
         renderer.dispose();
         if (document.body.contains(button)) document.body.removeChild(button);
+        if (mountRef.current?.contains(renderer.domElement)) mountRef.current.removeChild(renderer.domElement);
     };
-  }, [!!session, !!geoConstants]);
+  }, [!!session, !!geoConstants]); // Only restarts if session or geo constants change
 
   // --- DATA SYNC ---
   useEffect(() => {
@@ -200,13 +207,11 @@ export default function Viewer({ session }: { session: any }) {
   return (
     <>
       <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]" onPointerDown={() => { isInteractingWithUIRef.current = true; }} onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}>
-        {/* HUD UI */}
         <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
           <button onClick={requestCompass} className={`px-4 py-2 rounded-full text-[10px] font-bold border ${aligned ? "bg-green-500/20 text-green-400" : "bg-white text-black"}`}>
             {aligned ? "NORTH LOCKED" : "ALIGN COMPASS"}
           </button>
         </div>
-
         <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
