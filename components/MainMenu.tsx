@@ -96,7 +96,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
           return;
         }
 
-        setGallery(prev => [{ id: path, image_url: publicData.publicUrl, user_id }, ...prev]);
+        setGallery(prev => [{ id: path, image_url: publicData.publicUrl, user_id: userId }, ...prev]);
       } finally {
         setCapturing(false);
         if (overlay) overlay.style.display = '';
