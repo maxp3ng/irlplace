@@ -8,7 +8,7 @@ import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponent
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
-const Z_OFFSET = 1.5;
+const Z_OFFSET = -1.5; // Fixed the sign to keep it in front of the camera
 const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 
@@ -98,7 +98,6 @@ export default function Viewer({ session }: { session: any }) {
     setIsDrafting(false);
   };
 
-  // --- GEOLOCATION ---
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(pos => {
       latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -107,13 +106,6 @@ export default function Viewer({ session }: { session: any }) {
     }, null, { enableHighAccuracy: true });
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
-
-  // --- ANONYMOUS SIGN-IN ---
-  const signInAnonymously = async () => {
-    const { data, error } = await supabase.auth.signInAnonymously();
-    if (error) console.error(error);
-    else setSession(data.session);
-  };
 
   const requestCompass = async () => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
@@ -129,10 +121,8 @@ export default function Viewer({ session }: { session: any }) {
     } else window.addEventListener('deviceorientationabsolute', handleOrientation, true);
   };
 
-  // --- AR ENGINE ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
-
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -149,7 +139,6 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
-    // FIX: Re-adding the select listener so you can trigger drafting
     const controller = renderer.xr.getController(0);
     const onSelect = () => {
         if (isInteractingWithUIRef.current) return;
@@ -180,7 +169,6 @@ export default function Viewer({ session }: { session: any }) {
     document.body.appendChild(button);
 
     return () => {
-        // CLEANUP: Remove specifically created objects to avoid "Double Ghost"
         controller.removeEventListener('select', onSelect);
         sceneRef.current.remove(ghost);
         sceneRef.current.remove(light);
@@ -190,9 +178,8 @@ export default function Viewer({ session }: { session: any }) {
         if (document.body.contains(button)) document.body.removeChild(button);
         if (mountRef.current?.contains(renderer.domElement)) mountRef.current.removeChild(renderer.domElement);
     };
-  }, [!!session, !!geoConstants]); // Only restarts if session or geo constants change
+  }, [!!session, !!geoConstants]);
 
-  // --- DATA SYNC ---
   useEffect(() => {
     if (position.lat === 0 || !session) return;
     const loadAndListen = async () => {
@@ -209,8 +196,21 @@ export default function Viewer({ session }: { session: any }) {
       return () => { supabase.removeChannel(channel); };
     };
     loadAndListen();
-  }, [position.lat, session]);
-       <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
+  }, [position.lat, !!session]);
+
+  return (
+    <>
+      <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]" 
+           onPointerDown={() => { isInteractingWithUIRef.current = true; }} 
+           onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}>
+        
+        <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
+          <button onClick={requestCompass} className={`px-4 py-2 rounded-full text-[10px] font-bold border ${aligned ? "bg-green-500/20 text-green-400 border-green-500/50" : "bg-white text-black border-white"}`}>
+            {aligned ? "NORTH LOCKED" : "ALIGN COMPASS"}
+          </button>
+        </div>
+
+        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
           ) : (
