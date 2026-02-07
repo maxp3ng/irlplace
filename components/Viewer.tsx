@@ -27,6 +27,8 @@ export default function Viewer({ session }: { session: any }) {
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
   const sessionRef = useRef(session);
+  const isIOSRef = useRef(typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent));
+  const handleConfirmRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
@@ -34,6 +36,7 @@ export default function Viewer({ session }: { session: any }) {
 
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
   useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { handleConfirmRef.current = handleConfirm; });
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
@@ -159,10 +162,14 @@ export default function Viewer({ session }: { session: any }) {
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
-    // iOS Select Event fix: ensure UI block is checked
-    const triggerDrafting = () => { 
+    // iOS: skip drafting mode, place immediately on tap
+    const triggerDrafting = () => {
       if (!isInteractingWithUIRef.current) {
-        setIsDrafting(true); 
+        if (isIOSRef.current) {
+          handleConfirmRef.current();
+        } else {
+          setIsDrafting(true);
+        }
       }
     };
     controller.addEventListener('select', triggerDrafting);
