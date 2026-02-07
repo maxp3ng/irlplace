@@ -8,7 +8,7 @@ import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponent
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
-const Z_OFFSET = -1.2;
+const Z_OFFSET = 0.5;
 const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 
