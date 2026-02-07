@@ -87,7 +87,7 @@ export default function GlobalARViewer() {
       }]);
     });
     scene.add(controller);
-    const Z_OFFSET = -1.5;
+    const Z_OFFSET = 1.5;
     // --- ANIMATION LOOP ---
     renderer.setAnimationLoop(() => {
       if (renderer.xr.isPresenting && ghostRef.current) {
