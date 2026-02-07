@@ -127,7 +127,7 @@ export default function Viewer() {
 
           if (depthData) {
             depthUniforms.uDepthTexture.value = new THREE.DataTexture(
-              depthData.data,
+              new Uint16Array(depthData.data),
               depthData.width,
               depthData.height,
               THREE.RedFormat
