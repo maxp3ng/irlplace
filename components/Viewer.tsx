@@ -112,6 +112,7 @@ export default function GlobalARViewer() {
         if (data) addVoxelLocally(data);
       }
     });
+
     scene.add(controller);
 
     renderer.setAnimationLoop(() => {
