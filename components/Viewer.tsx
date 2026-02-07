@@ -7,7 +7,7 @@ import { supabase } from '@/utils/supabase';
 
 interface Voxel { id: string; lon: number; alt: number; lat: number; color: string; }
 
-export default function Viewer() {
+export default function Viewer({ selectedColor }: { selectedColor: { hex: string } }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -92,7 +92,7 @@ export default function Viewer() {
 
         await supabase.from('voxels').insert([{
           lat: newLat, lon: newLon, alt: worldPos.y,
-          color: "#" + new THREE.Color(Math.random() * 0xffffff).getHexString()
+          color: "#"+selectedColor
         }]);
       }
     });
