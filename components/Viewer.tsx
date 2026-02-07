@@ -27,15 +27,17 @@ interface Voxel {
   user_id: string;
 }
 
-export default function Viewer({ selectedColor }: { selectedColor: { hex: string } }) {
+export default function Viewer() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   const ghostRef = useRef<THREE.Mesh | null>(null);
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
-  // const [selectedColor, setSelectedColor] = useState(COLORS[0]);
 
+
+  const [selectedColor, setSelectedColor] = useState(COLORS[0]);
+  const [isPlacing, setIsPlacing] = useState(true);
 
   const [session, setSession] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -274,6 +276,11 @@ export default function Viewer({ selectedColor }: { selectedColor: { hex: string
             {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
           </button>
         </div>
+        {isPlacing && (
+          <div className="pointer-events-auto">
+            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
+          </div>
+        )}
       </div>
       <div ref={mountRef} className="fixed inset-0" />
     </>

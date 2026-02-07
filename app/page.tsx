@@ -58,9 +58,7 @@ export default function App() {
     <>
       {/* 3D AR Layer */}
       <div className="fixed inset-0 z-0 bg-black">
-        <Viewer 
-          selectedColor={selectedColor}
-        />
+        <Viewer/>
       </div>
 
       {/* UI Layer */}
@@ -75,11 +73,7 @@ export default function App() {
         </div>
 
         {/* Color Picker */}
-        {isPlacing && (
-          <div className="pointer-events-auto">
-            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
-          </div>
-        )}
+
 
         {/* Bottom Console */}
         <div className="absolute bottom-0 w-full pb-10 space-y-4 flex flex-col items-center">
