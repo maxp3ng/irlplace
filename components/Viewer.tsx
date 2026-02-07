@@ -35,6 +35,9 @@ export default function Viewer() {
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
 
+  // --- REFS FOR PERSISTENCE ---
+  const selectedColorRef = useRef(COLORS[0]); // Tracks color without re-running Effect
+  const sessionRef = useRef<any>(null);
 
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [isPlacing, setIsPlacing] = useState(true);
@@ -43,6 +46,16 @@ export default function Viewer() {
   const [authReady, setAuthReady] = useState(false);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
+
+  // Sync state to Ref
+  useEffect(() => {
+    selectedColorRef.current = selectedColor;
+  }, [selectedColor]);
+
+  // Sync session state to Ref
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   // ---------------- HELPERS ----------------
   const getGlobalOrigin = (lat: number, lng: number) => ({
@@ -107,7 +120,10 @@ export default function Viewer() {
 
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      listener.subscription.unsubscribe();
+      if (document.body.contains(script)) document.body.removeChild(script);
+    };
   }, []);
 
   // ---------------- GEOLOCATION ----------------
@@ -138,6 +154,7 @@ export default function Viewer() {
 
   // ---------------- AR ENGINE ----------------
   useEffect(() => {
+    // We only trigger this when the session is first established
     if (!mountRef.current || !session) return;
 
     const scene = sceneRef.current;
@@ -157,15 +174,20 @@ export default function Viewer() {
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', async () => {
-      if (!ghostRef.current || !session) return;
+    
+    // --- THE FIX: USE REFS INSIDE LISTENER ---
+    const onSelect = async () => {
+      const currentSession = sessionRef.current;
+      const currentColor = selectedColorRef.current;
+      
+      if (!ghostRef.current || !currentSession) return;
 
       const worldPos = new THREE.Vector3();
       ghostRef.current.getWorldPosition(worldPos);
 
       let existingVoxelId: string | null = null;
       voxelsMap.current.forEach((mesh, id) => {
-        if (mesh.position.distanceTo(ghostRef.current!.position) < 0.05 && (mesh as any).user_id === session.user.id) {
+        if (mesh.position.distanceTo(ghostRef.current!.position) < 0.05 && (mesh as any).user_id === currentSession.user.id) {
           existingVoxelId = id;
         }
       });
@@ -183,13 +205,15 @@ export default function Viewer() {
           lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (worldPos.x / lonScale),
           alt: worldPos.y,
-          color: selectedColor.hex, // Use the prop color
-          user_id: session.user.id
+          color: currentColor.hex, // Always gets latest color from Ref
+          user_id: currentSession.user.id
         }]).select().single();
 
         if (data) addVoxelLocally(data as Voxel);
       }
-    });
+    };
+
+    controller.addEventListener('select', onSelect);
     scene.add(controller);
 
     renderer.setAnimationLoop(() => {
@@ -217,12 +241,16 @@ export default function Viewer() {
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', onResize);
+
     return () => { 
         window.removeEventListener('resize', onResize); 
+        controller.removeEventListener('select', onSelect);
+        renderer.setAnimationLoop(null);
         renderer.dispose(); 
-        button.remove(); 
+        if (document.body.contains(button)) document.body.removeChild(button); 
     };
-  }, [session, selectedColor]);
+    // Removed selectedColor from here!
+  }, [session]); 
 
   // ---------------- REALTIME VOXELS ----------------
   useEffect(() => {
@@ -276,8 +304,9 @@ export default function Viewer() {
             {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
           </button>
         </div>
+        
         {isPlacing && (
-          <div className="pointer-events-auto">
+          <div className="absolute bottom-8 left-0 right-0 flex justify-center pointer-events-auto">
             <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
           </div>
         )}
