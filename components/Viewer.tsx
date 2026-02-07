@@ -38,28 +38,28 @@ export default function Viewer() {
       uRawValueToMeters: { value: 0 },
     };
 
-    const occlusionMaterial = new THREE.ShaderMaterial({
-      uniforms: depthUniforms,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        uniform sampler2D uDepthTexture;
-        uniform float uRawValueToMeters;
+    // const occlusionMaterial = new THREE.ShaderMaterial({
+    //   uniforms: depthUniforms,
+    //   vertexShader: `
+    //     varying vec2 vUv;
+    //     void main() {
+    //       vUv = uv;
+    //       gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    //     }
+    //   `,
+    //   fragmentShader: `
+    //     varying vec2 vUv;
+    //     uniform sampler2D uDepthTexture;
+    //     uniform float uRawValueToMeters;
 
-        void main() {
-          vec4 depth = texture2D(uDepthTexture, vUv);
-          if(depth.r <= 0.0) discard;
-          gl_FragColor = vec4(0.0);
-        }
-      `,
-      colorWrite: false,
-    });
+    //     void main() {
+    //       vec4 depth = texture2D(uDepthTexture, vUv);
+    //       if(depth.r <= 0.0) discard;
+    //       gl_FragColor = vec4(0.0);
+    //     }
+    //   `,
+    //   colorWrite: false,
+    // });
 
     // --- Scene & camera ---
     scene = new THREE.Scene();
@@ -95,9 +95,9 @@ export default function Viewer() {
     // --- Geometry & occlusion ---
     const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(Math.PI / 2);
 
-    const occlusionMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), occlusionMaterial);
-    occlusionMesh.renderOrder = -1;
-    scene.add(occlusionMesh);
+    // const occlusionMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), occlusionMaterial);
+    // occlusionMesh.renderOrder = -1;
+    // scene.add(occlusionMesh);
 
     // --- Spawn cones ---
     function onSelect() {
