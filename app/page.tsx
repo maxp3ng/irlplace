@@ -59,6 +59,9 @@ export default function App() {
   const removeVoxel = async (id: string) => {
     await supabase.from('voxels').delete().eq('id', id);
   };
+  const movePixel = (axis: 'x' | 'y' | 'z', dir: number) => {
+    setPixelPos(prev => ({ ...prev, [axis]: prev[axis] + dir }));
+  };
 
   if (step === 'welcome') return <WelcomeScreen onStart={() => setStep('permissions')} />;
   if (step === 'permissions') return <PermissionScreen status={permissionStatus} onGrant={requestPermissions} />;
@@ -89,7 +92,7 @@ export default function App() {
             {isPlacing ? (
               <PlacementControls 
                 pixelPos={pixelPos} selectedColor={selectedColor}
-                onMove={(axis, dir) => setPixelPos(p => ({ ...p, [axis]: p[axis] + dir }))}
+                onMove={movePixel}
                 onColorSelect={setSelectedColor} onCancel={() => setIsPlacing(false)} onConfirm={confirmPlacement}
               />
             ) : (
