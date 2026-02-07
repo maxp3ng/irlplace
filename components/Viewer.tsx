@@ -125,7 +125,7 @@ export default function GlobalARViewer() {
         lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
         lon: origin.lng + (worldPos.x / lonScale),
         alt: worldPos.y,
-        color: Math.random()*0xffffff
+        color: "#00ff00"
       };
 
       addVoxelLocally(newVoxel);
