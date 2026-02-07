@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
-import { ColorPicker, COLORS, PlacementControls} from '@/components/UIComponents';
+import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
@@ -12,7 +12,7 @@ const Z_OFFSET = -1.2;
 const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 
-export default function Viewer() {
+export default function Viewer({ session }: { session: any }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -23,16 +23,14 @@ export default function Viewer() {
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
-  const sessionRef = useRef<any>(null);
+  const sessionRef = useRef<any>(session);
 
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
-  const [session, setSession] = useState<any>(null);
 
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
-  useEffect(() => { selectedColorRef.current = selectedColor; }, [selectedColor]);
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => {
     selectedColorRef.current = selectedColor;
@@ -43,27 +41,10 @@ export default function Viewer() {
     if (!position.lat) return null;
     const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
     return { lonScale, latRatio: METERS_PER_DEGREE / VOXEL_SNAP, lonRatio: lonScale / VOXEL_SNAP };
-  }, [!!position.lat]);
-
-  // Helper to convert GPS to Local Meters
-  const getLocalPos = (lat: number, lon: number) => {
-    const origin = originGps.current;
-    if (!origin) return new THREE.Vector3(0,0,0);
-    const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-    return new THREE.Vector3(
-      (lon - origin.lng) * lonScale,
-      0, // Alt handled separately
-      -(lat - origin.lat) * METERS_PER_DEGREE
-    );
-  };
+  }, [position.lat]);
 
   const addVoxelLocally = (voxel: any) => {
     if (voxelsMap.current.has(voxel.id)) return;
-
-    const distLat = Math.abs(voxel.lat - latestPos.current.lat);
-    const distLon = Math.abs(voxel.lon - latestPos.current.lng);
-    if (distLat > DEGREE_THRESHOLD || distLon > DEGREE_THRESHOLD) return;
-
     const origin = originGps.current || { lat: voxel.lat, lng: voxel.lon };
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
     const targetX = (voxel.lon - origin.lng) * lonScale;
@@ -73,9 +54,7 @@ export default function Viewer() {
     voxelsMap.current.forEach((m) => {
       if (Math.abs(m.position.x - targetX) < 0.05 && 
           Math.abs(m.position.z - targetZ) < 0.05 && 
-          Math.abs(m.position.y - voxel.alt) < 0.05) {
-        exists = true;
-      }
+          Math.abs(m.position.y - voxel.alt) < 0.05) exists = true;
     });
     if (exists) return;
 
@@ -94,29 +73,21 @@ export default function Viewer() {
   };
 
   const handleConfirm = async () => {
-    const currentSession = sessionRef.current;
-    if (!ghostRef.current || !currentSession || !originGps.current) return;
-
+    if (!ghostRef.current || !sessionRef.current || !originGps.current) return;
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-
     const tempId = `temp-${Date.now()}`;
     const voxelData = {
       lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
       lon: origin.lng + (localPos.x / lonScale),
       alt: localPos.y,
       color: selectedColorRef.current.hex,
-      user_id: currentSession.user.id
+      user_id: sessionRef.current.user.id
     };
 
-    // 1. Add locally with temp ID (Instant feedback)
     addVoxelLocally({ ...voxelData, id: tempId });
-
-    // 2. Persist
     const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
-    
-    // 3. Swap temp ID for real ID to avoid future duplicates
     if (data) {
       const mesh = voxelsMap.current.get(tempId);
       if (mesh) {
@@ -127,29 +98,14 @@ export default function Viewer() {
     setIsDrafting(false);
   };
 
-  // --- AUTH & GEOLOCATION ---
+  // --- GEOLOCATION ---
   useEffect(() => {
-    // Load Google sign-in
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    document.body.appendChild(script);
-
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-
-    // Geolocation
     const watchId = navigator.geolocation.watchPosition(pos => {
       latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
       setPosition(latestPos.current);
       if (!originGps.current) originGps.current = { ...latestPos.current };
     }, null, { enableHighAccuracy: true });
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-      authListener.subscription.unsubscribe();
-      script.remove();
-    };
+    return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
   // --- ANONYMOUS SIGN-IN ---
@@ -176,29 +132,41 @@ export default function Viewer() {
   // --- AR ENGINE ---
   useEffect(() => {
     if (!mountRef.current || !session) return;
+
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 1000);
-    sceneRef.current.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
+    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+    sceneRef.current.add(light);
+
+    const ghost = new THREE.Mesh(
+      new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
+      new THREE.MeshPhongMaterial({ color: selectedColorRef.current.hex, transparent: true, opacity: 0.5 })
+    );
+    sceneRef.current.add(ghost);
+    ghostRef.current = ghost;
+
+    // FIX: Re-adding the select listener so you can trigger drafting
+    const controller = renderer.xr.getController(0);
+    const onSelect = () => {
+        if (isInteractingWithUIRef.current) return;
+        setIsDrafting(true);
+    };
+    controller.addEventListener('select', onSelect);
+    sceneRef.current.add(controller);
 
     renderer.setAnimationLoop(() => {
       if (!isDraftingRef.current && geoConstants && originGps.current) {
         camera.updateMatrixWorld();
         const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         sceneRef.current.worldToLocal(targetPos);
-
         const { lonScale, latRatio, lonRatio } = geoConstants;
         const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
         const snapLon = Math.round((targetPos.x / lonScale) * lonRatio) / lonRatio;
-
-        ghostRef.current?.position.set(
-          snapLon * lonScale,
-          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          -snapLat * METERS_PER_DEGREE
-        );
+        ghostRef.current?.position.set(snapLon * lonScale, Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP, -snapLat * METERS_PER_DEGREE);
       }
       renderer.render(sceneRef.current, camera);
     });
@@ -211,9 +179,20 @@ export default function Viewer() {
     });
     document.body.appendChild(button);
 
-    return () => { renderer.setAnimationLoop(null); renderer.dispose(); };
-  }, [session, !!geoConstants]);
+    return () => {
+        // CLEANUP: Remove specifically created objects to avoid "Double Ghost"
+        controller.removeEventListener('select', onSelect);
+        sceneRef.current.remove(ghost);
+        sceneRef.current.remove(light);
+        sceneRef.current.remove(controller);
+        renderer.setAnimationLoop(null);
+        renderer.dispose();
+        if (document.body.contains(button)) document.body.removeChild(button);
+        if (mountRef.current?.contains(renderer.domElement)) mountRef.current.removeChild(renderer.domElement);
+    };
+  }, [!!session, !!geoConstants]); // Only restarts if session or geo constants change
 
+  // --- DATA SYNC ---
   useEffect(() => {
     if (position.lat === 0 || !session) return;
     const loadAndListen = async () => {
@@ -222,8 +201,12 @@ export default function Viewer() {
         .gte('lon', position.lng - DEGREE_THRESHOLD).lte('lon', position.lng + DEGREE_THRESHOLD);
       if (data) data.forEach(v => addVoxelLocally(v));
 
-      supabase.channel('voxels_realtime').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, 
-        payload => addVoxelLocally(payload.new)).subscribe();
+      const channel = supabase.channel('voxels_realtime')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, 
+        payload => addVoxelLocally(payload.new))
+        .subscribe();
+        
+      return () => { supabase.removeChannel(channel); };
     };
     loadAndListen();
   }, [position.lat, session]);
@@ -235,7 +218,6 @@ export default function Viewer() {
           )}
         </div>
       </div>
-
       <div ref={mountRef} className="fixed inset-0" />
     </>
   );
