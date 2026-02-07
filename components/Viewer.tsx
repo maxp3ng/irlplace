@@ -3,115 +3,149 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
-import { supabase } from "@/utils/supabase";
 
 export default function Viewer() {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
-  const origin = useRef<{ lat: number; lon: number } | null>(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
 
-    // --- Conversion Utilities ---
-    const latLonToMeters = (lat: number, lon: number, alt: number) => {
-      if (!origin.current) return new THREE.Vector3(0, 0, 0);
+    let renderer: THREE.WebGLRenderer;
+    let scene: THREE.Scene;
+    let camera: THREE.PerspectiveCamera;
+    let controller: THREE.XRTargetRaySpace;
 
-      const deltaLat = lat - origin.current.lat;
-      const deltaLon = lon - origin.current.lon;
-
-      // Basic equirectangular approximation
-      const y = alt; // Altitude maps to Y (up/down)
-      const z = -(deltaLat * 111111); // Latitude maps to Z (North/South)
-      const x = deltaLon * (111111 * Math.cos(origin.current.lat * (Math.PI / 180))); // Longitude maps to X (East/West)
-
-      return new THREE.Vector3(x, y, z);
+    // Depth texture uniforms (comes from XRFrame)
+    const depthUniforms = {
+      uDepthTexture: { value: null as THREE.Texture | null },
+      uRawValueToMeters: { value: 0 },
     };
 
-    // --- Scene Setup ---
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const occlusionMaterial = new THREE.ShaderMaterial({
+      uniforms: depthUniforms,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform sampler2D uDepthTexture;
+        uniform float uRawValueToMeters;
+
+        void main() {
+          vec4 depth = texture2D(uDepthTexture, vUv);
+          if(depth.r <= 0.0) discard;
+
+          // write only depth (no color)
+          gl_FragColor = vec4(0.0);
+        }
+      `,
+      colorWrite: false,
+    });
+
+    // Scene
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera(
+      70,
+      window.innerWidth / window.innerHeight,
+      0.01,
+      20
+    );
+
+    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+    light.position.set(0.5, 1, 0.25);
+    scene.add(light);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
+    renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
+
     mountRef.current.appendChild(renderer.domElement);
 
-    const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+    document.body.appendChild(
+      ARButton.createButton(renderer, {
+        requiredFeatures: ["hit-test", "depth-sensing"],
+        depthSensing: {
+          usagePreference: ["cpu-optimized", "gpu-optimized"],
+          dataFormatPreference: ["luminance-alpha", "float32"],
+        },
+      })
+    );
 
-    // --- Helpers ---
-    const addVoxelToScene = (data: any) => {
-      if (voxelsMap.current.has(data.id)) return;
-      
-      const pos = latLonToMeters(data.lat, data.lon, data.alt);
-      const material = new THREE.MeshPhongMaterial({ color: data.color });
+    // Cone geometry
+    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(
+      Math.PI / 2
+    );
+
+    // Fullscreen quad used for occlusion
+    const occlusionMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      occlusionMaterial
+    );
+    occlusionMesh.renderOrder = -1;
+    scene.add(occlusionMesh);
+
+    function onSelect() {
+      const material = new THREE.MeshPhongMaterial({
+        color: 0xffffff * Math.random(),
+      });
+
       const mesh = new THREE.Mesh(geometry, material);
-      
-      mesh.position.copy(pos);
-      mesh.userData.id = data.id;
+      mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
+      mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
       scene.add(mesh);
-      voxelsMap.current.set(data.id, mesh);
-    };
+    }
 
-    // --- Get Current Location & Sync ---
-    navigator.geolocation.getCurrentPosition((pos) => {
-      origin.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-      
-      // Fetch and Subscribe
-      const syncVoxels = async () => {
-        const { data } = await supabase.from("voxels").select("*");
-        data?.forEach(addVoxelToScene);
-
-        supabase
-          .channel("voxel-sync")
-          .on("postgres_changes", { event: "INSERT", schema: "public", table: "voxels" }, 
-            payload => addVoxelToScene(payload.new)
-          )
-          .on("postgres_changes", { event: "DELETE", schema: "public", table: "voxels" }, 
-            payload => {
-              const mesh = voxelsMap.current.get(payload.old.id);
-              if (mesh) {
-                scene.remove(mesh);
-                voxelsMap.current.delete(payload.old.id);
-              }
-            }
-          )
-          .subscribe();
-      };
-      syncVoxels();
-    });
-
-    // --- Interaction ---
-    const controller = renderer.xr.getController(0);
+    controller = renderer.xr.getController(0);
+    controller.addEventListener("select", onSelect);
     scene.add(controller);
 
-    controller.addEventListener("select", async () => {
-      if (!origin.current) return;
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
 
-      // Get position in Three.js world space
-      const worldPos = new THREE.Vector3(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
+    window.addEventListener("resize", onWindowResize);
 
-      // Inverse conversion: Meters back to Lat/Lon
-      const latScale = 111111;
-      const lonScale = 111111 * Math.cos(origin.current.lat * (Math.PI / 180));
+    renderer.setAnimationLoop((time, frame) => {
+      if (frame) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
 
-      const newLat = origin.current.lat - (worldPos.z / latScale);
-      const newLon = origin.current.lon + (worldPos.x / lonScale);
-      const newAlt = worldPos.y;
+        const pose = frame.getViewerPose(referenceSpace!);
+        if (pose && session) {
+          const view = pose.views[0];
 
-      await supabase.from("voxels").insert({
-        lat: newLat,
-        lon: newLon,
-        alt: newAlt,
-        color: `#${new THREE.Color(Math.random() * 0xffffff).getHexString()}`,
-        // user_id: (handle auth if needed)
-      });
+          // @ts-ignore (WebXR depth API)
+          const depthData = frame.getDepthInformation(view);
+
+          if (depthData) {
+            depthUniforms.uDepthTexture.value = new THREE.DataTexture(
+              new Uint16Array(depthData.data),
+              depthData.width,
+              depthData.height,
+              THREE.RedFormat
+            );
+
+            depthUniforms.uDepthTexture.value.needsUpdate = true;
+            depthUniforms.uRawValueToMeters.value =
+              depthData.rawValueToMeters;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
     });
 
-    renderer.setAnimationLoop(() => renderer.render(scene, camera));
-
     return () => {
+      window.removeEventListener("resize", onWindowResize);
       renderer.dispose();
-      supabase.removeAllChannels();
     };
   }, []);
 
