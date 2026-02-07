@@ -70,10 +70,10 @@ export default function App() {
     <>
       <div className="fixed inset-0 z-0">
         <Viewer 
-          voxels={voxels}
-          isPlacing={isPlacing}
-          pixelPos={pixelPos}
-          selectedColor={selectedColor}
+          // voxels={voxels}
+          // isPlacing={isPlacing}
+          // pixelPos={pixelPos}
+          // selectedColor={selectedColor}
         />
       </div>
 
