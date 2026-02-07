@@ -66,7 +66,8 @@ export default function App() {
     }
   };
 
-  const removeVoxel = (id: string) => {
+  const removeVoxel = async (id: string) => {
+    const { error } = await supabase.from('voxels').delete().eq('id',id).select();
     setVoxels(prev => prev.filter(v => v.id !== id));
   };
 
