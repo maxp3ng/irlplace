@@ -19,43 +19,45 @@ export default function LeaderboardMenu({ session }: { session: any }) {
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
-      // Fetch user_id and the related username from the profiles table
-      const { data, error } = await supabase
-        .from('voxels')
-        .select(`
-          user_id,
-          profiles:user_id ( username )
-        `);
+  // Now we just ask for profiles(username) 
+  // because the foreign keys match perfectly.
+  const { data, error } = await supabase
+    .from('voxels')
+    .select(`
+      user_id,
+      profiles (
+        username
+      )
+    `);
 
-      if (error) {
-        console.error("Leaderboard fetch error:", error);
-        return;
+  if (error) {
+    console.error("Fetch error:", error);
+    return;
+  }
+
+  if (data) {
+    const counts: LeaderAccumulator = {};
+    
+    data.forEach((item: any) => {
+      const uid = item.user_id;
+      // profiles will be a single object because it's a 1-to-1 or 1-to-many join
+      const name = item.profiles?.display_name;
+
+      if (name) {
+        if (!counts[uid]) {
+          counts[uid] = { username: name, count: 0 };
+        }
+        counts[uid].count++;
       }
+    });
 
-      if (data) {
-        const counts: LeaderAccumulator = {};
-        
-        data.forEach((item: any) => {
-          const uid = item.user_id;
-          
-          // Handle Supabase join return: it might be an object or a single-item array
-          const profileData = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
-          const name = profileData?.username || 'ANON_USER';
-          
-          if (!counts[uid]) {
-            counts[uid] = { username: name, count: 0 };
-          }
-          counts[uid].count++;
-        });
+    const sortedLeaders = Object.values(counts)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
 
-        // Line 42: Object.values now returns Leader[], so .sort knows what 'a' and 'b' are
-        const sortedLeaders = Object.values(counts)
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 5);
-
-        setLeaders(sortedLeaders);
-      }
-    };
+    setLeaders(sortedLeaders);
+  }
+};
 
     fetchLeaderboard();
     
