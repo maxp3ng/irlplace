@@ -4,15 +4,14 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/utils/supabase";
 import Viewer from "@/components/Viewer";
 
-const GOOGLE_CLIENT_ID =
-  "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
 
 export default function Auth() {
   const [session, setSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let interval: number | null = null;
-
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
@@ -26,34 +25,21 @@ export default function Auth() {
       // @ts-ignore
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
-        use_fedcm_for_prompt: true,
         callback: async (res: any) => {
           const { data, error } = await supabase.auth.signInWithIdToken({
             provider: "google",
             token: res.credential,
           });
-
           if (!error) setSession(data.session);
         },
       });
 
       const render = () => {
         const btn = document.getElementById("googleButton");
-        if (!btn) {
-          requestAnimationFrame(render);
-          return;
-        }
-
-        btn.innerHTML = "";
-
+        if (!btn) { requestAnimationFrame(render); return; }
         // @ts-ignore
-        window.google.accounts.id.renderButton(btn, {
-          theme: "outline",
-          size: "large",
-          width: 260,
-        });
+        window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large", width: 260 });
       };
-
       render();
     };
 
@@ -61,17 +47,18 @@ export default function Auth() {
 
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) setSession(data.session);
+      setLoading(false);
     });
 
-    const { data: authListener } =
-      supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
 
     return () => {
       if (interval) window.clearInterval(interval);
       authListener.subscription.unsubscribe();
-      script.remove();
     };
   }, []);
+
+  if (loading) return <div className="fixed inset-0 bg-black flex items-center justify-center text-white font-mono">LOADING...</div>;
 
   if (!session) {
     return (
@@ -83,4 +70,3 @@ export default function Auth() {
 
   return <Viewer session={session} />;
 }
-
