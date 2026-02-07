@@ -66,7 +66,14 @@ export default function Viewer() {
       // Spawn in front of controller
       mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
       mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
+      position.x = Math.round(position.x);
+      position.y = Math.round(position.y);
+      position.z = Math.round(position.z);
+      mesh.position.copy(position);
 
+      mesh.up.set(0, 1, 0);
+      mesh.rotation.set(-Math.PI / 2, 0, 0); // align along Z
+      
       // Attach GPS data if available
       (mesh as any).gps = position;
 
