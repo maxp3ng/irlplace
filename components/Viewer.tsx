@@ -15,7 +15,7 @@ import {
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
 const Z_OFFSET = -1.2;
-const VIEW_RADIUS_METERS = 50;
+const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
 
