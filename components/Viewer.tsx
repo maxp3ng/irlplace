@@ -1,11 +1,29 @@
 'use client'
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
 
 export default function Viewer() {
   const mountRef = useRef<HTMLDivElement | null>(null);
+
+  // --- GPS state ---
+  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
+
+  // --- Get GPS location on start ---
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGeoError("Geolocation not supported");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (err) => setGeoError(err.message),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }, []);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -15,7 +33,6 @@ export default function Viewer() {
     let camera: THREE.PerspectiveCamera;
     let controller: THREE.XRTargetRaySpace;
 
-    // Depth texture uniforms (comes from XRFrame)
     const depthUniforms = {
       uDepthTexture: { value: null as THREE.Texture | null },
       uRawValueToMeters: { value: 0 },
@@ -38,17 +55,14 @@ export default function Viewer() {
         void main() {
           vec4 depth = texture2D(uDepthTexture, vUv);
           if(depth.r <= 0.0) discard;
-
-          // write only depth (no color)
           gl_FragColor = vec4(0.0);
         }
       `,
       colorWrite: false,
     });
 
-    // Scene
+    // --- Scene & camera ---
     scene = new THREE.Scene();
-
     camera = new THREE.PerspectiveCamera(
       70,
       window.innerWidth / window.innerHeight,
@@ -60,44 +74,41 @@ export default function Viewer() {
     light.position.set(0.5, 1, 0.25);
     scene.add(light);
 
+    // --- Renderer ---
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
-
     mountRef.current.appendChild(renderer.domElement);
 
+    // --- AR Button ---
     document.body.appendChild(
       ARButton.createButton(renderer, {
         requiredFeatures: ["hit-test", "depth-sensing"],
         depthSensing: {
           usagePreference: ["cpu-optimized", "gpu-optimized"],
-          dataFormatPreference: ["luminance-alpha", "float32"],
+          dataFormatPreference: ["float32", "red"],
         },
       })
     );
 
-    // Cone geometry
-    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(
-      Math.PI / 2
-    );
+    // --- Geometry & occlusion ---
+    const geometry = new THREE.CylinderGeometry(0, 0.05, 0.2, 32).rotateX(Math.PI / 2);
 
-    // Fullscreen quad used for occlusion
-    const occlusionMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(2, 2),
-      occlusionMaterial
-    );
+    const occlusionMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), occlusionMaterial);
     occlusionMesh.renderOrder = -1;
     scene.add(occlusionMesh);
 
+    // --- Spawn cones ---
     function onSelect() {
-      const material = new THREE.MeshPhongMaterial({
-        color: 0xffffff * Math.random(),
-      });
-
+      const material = new THREE.MeshPhongMaterial({ color: 0xffffff * Math.random() });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
       mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
+
+      // Attach GPS data if available
+      (mesh as any).gps = position;
+
       scene.add(mesh);
     }
 
@@ -105,14 +116,15 @@ export default function Viewer() {
     controller.addEventListener("select", onSelect);
     scene.add(controller);
 
+    // --- Resize handler ---
     function onWindowResize() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
-
     window.addEventListener("resize", onWindowResize);
 
+    // --- Animation loop ---
     renderer.setAnimationLoop((time, frame) => {
       if (frame) {
         const referenceSpace = renderer.xr.getReferenceSpace();
@@ -121,22 +133,35 @@ export default function Viewer() {
         const pose = frame.getViewerPose(referenceSpace!);
         if (pose && session) {
           const view = pose.views[0];
-
-          // @ts-ignore (WebXR depth API)
+          // @ts-ignore
           const depthData = frame.getDepthInformation(view);
-
           if (depthData) {
+            let array: Uint16Array | Float32Array;
+            let type: THREE.TextureDataType;
+
+            // Detect type
+            if (depthData.data instanceof Float32Array) {
+              array = depthData.data;
+              type = THREE.FloatType;
+            } else if (depthData.data instanceof Uint16Array) {
+              array = depthData.data;
+              type = THREE.UnsignedShortType;
+            } else {
+              console.warn("Unknown depthData.data type:", depthData.data);
+              return;
+            }
+
             depthUniforms.uDepthTexture.value = new THREE.DataTexture(
-              new Uint16Array(depthData.data),
-              depthData.width,
-              depthData.height,
-              THREE.RedFormat
+                                                array,
+                                                depthData.width,
+                                                depthData.height,
+                                                THREE.RedFormat,
+                                                type
             );
 
             depthUniforms.uDepthTexture.value.needsUpdate = true;
-            depthUniforms.uRawValueToMeters.value =
-              depthData.rawValueToMeters;
-          }
+            depthUniforms.uRawValueToMeters.value = depthData.rawValueToMeters;
+            }
         }
       }
 
@@ -147,7 +172,17 @@ export default function Viewer() {
       window.removeEventListener("resize", onWindowResize);
       renderer.dispose();
     };
-  }, []);
+  }, [position]);
 
-  return <div ref={mountRef} />;
+  return (
+    <>
+      {geoError && <div style={{ color: "red" }}>{geoError}</div>}
+      {position && (
+        <div style={{ position: "absolute", top: 10, left: 10, color: "white", zIndex: 10 }}>
+          Latitude: {position.lat.toFixed(6)}, Longitude: {position.lng.toFixed(6)}
+        </div>
+      )}
+      <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+    </>
+  );
 }
