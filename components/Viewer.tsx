@@ -5,9 +5,6 @@ import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { 
-  WelcomeScreen, 
-  PermissionScreen, 
-  PlacementControls, 
   ColorPicker,
   COLORS 
 } from '@/components/UIComponents';
@@ -35,29 +32,27 @@ export default function Viewer() {
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
 
-  // --- REFS FOR PERSISTENCE ---
-  const selectedColorRef = useRef(COLORS[0]); // Tracks color without re-running Effect
+  // --- REFS FOR PERSISTENCE & LOCKS ---
+  const selectedColorRef = useRef(COLORS[0]);
   const sessionRef = useRef<any>(null);
+  const isInteractingWithUI = useRef(false); // The lock to prevent accidental placement
 
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
-  const [isPlacing, setIsPlacing] = useState(true);
-
   const [session, setSession] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
-  // Sync state to Ref
+  // Sync state to Ref and update Ghost Cube color preview
   useEffect(() => {
     selectedColorRef.current = selectedColor;
+    if (ghostRef.current) {
+      (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
+    }
   }, [selectedColor]);
 
-  // Sync session state to Ref
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
 
-  // ---------------- HELPERS ----------------
   const getGlobalOrigin = (lat: number, lng: number) => ({
     lat: Math.floor(lat / GRID_SIZE) * GRID_SIZE,
     lng: Math.floor(lng / GRID_SIZE) * GRID_SIZE,
@@ -93,37 +88,27 @@ export default function Viewer() {
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
         callback: async (res: any) => {
-          try {
-            const { data, error } = await supabase.auth.signInWithIdToken({
-              provider: "google",
-              token: res.credential,
-            });
-            if (error) console.error("Supabase sign-in error:", error);
-            else setSession(data.session);
-          } catch (e) {
-            console.error("Sign-in callback failed:", e);
-          }
+          const { data, error } = await supabase.auth.signInWithIdToken({
+            provider: "google",
+            token: res.credential,
+          });
+          if (!error) setSession(data.session);
         },
         use_fedcm_for_prompt: true,
       });
-
       const renderButton = () => {
         const btn = document.getElementById("googleButton");
-        if (!btn) return requestAnimationFrame(renderButton);
-        // @ts-ignore
-        window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large", text: "signin_with" });
+        if (btn) {
+          // @ts-ignore
+          window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large" });
+        } else requestAnimationFrame(renderButton);
       };
       renderButton();
       setAuthReady(true);
     };
     document.body.appendChild(script);
-
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => {
-      listener.subscription.unsubscribe();
-      if (document.body.contains(script)) document.body.removeChild(script);
-    };
+    return () => { if (document.body.contains(script)) document.body.removeChild(script); };
   }, []);
 
   // ---------------- GEOLOCATION ----------------
@@ -133,11 +118,9 @@ export default function Viewer() {
       setPosition(latestPos.current);
       if (!originGps.current) originGps.current = { ...latestPos.current };
     }, null, { enableHighAccuracy: true });
-
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // ---------------- COMPASS ----------------
   const requestCompass = async () => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
       const heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
@@ -154,7 +137,6 @@ export default function Viewer() {
 
   // ---------------- AR ENGINE ----------------
   useEffect(() => {
-    // We only trigger this when the session is first established
     if (!mountRef.current || !session) return;
 
     const scene = sceneRef.current;
@@ -168,18 +150,25 @@ export default function Viewer() {
 
     const ghost = new THREE.Mesh(
       new THREE.BoxGeometry(0.1, 0.1, 0.1),
-      new THREE.MeshPhongMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 })
+      new THREE.MeshPhongMaterial({ 
+        color: selectedColorRef.current.hex, 
+        transparent: true, 
+        opacity: 0.5 
+      })
     );
     scene.add(ghost);
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
     
-    // --- THE FIX: USE REFS INSIDE LISTENER ---
     const onSelect = async () => {
+      // SHIELD: Check if we are touching UI
+      if (isInteractingWithUI.current) {
+        setTimeout(() => { isInteractingWithUI.current = false; }, 100);
+        return;
+      }
+
       const currentSession = sessionRef.current;
-      const currentColor = selectedColorRef.current;
-      
       if (!ghostRef.current || !currentSession) return;
 
       const worldPos = new THREE.Vector3();
@@ -205,7 +194,7 @@ export default function Viewer() {
           lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (worldPos.x / lonScale),
           alt: worldPos.y,
-          color: currentColor.hex, // Always gets latest color from Ref
+          color: selectedColorRef.current.hex,
           user_id: currentSession.user.id
         }]).select().single();
 
@@ -235,81 +224,64 @@ export default function Viewer() {
     });
     document.body.appendChild(button);
 
-    const onResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    };
-    window.addEventListener('resize', onResize);
-
     return () => { 
-        window.removeEventListener('resize', onResize); 
         controller.removeEventListener('select', onSelect);
         renderer.setAnimationLoop(null);
         renderer.dispose(); 
         if (document.body.contains(button)) document.body.removeChild(button); 
     };
-    // Removed selectedColor from here!
-  }, [session]); 
+  }, [session]);
 
   // ---------------- REALTIME VOXELS ----------------
   useEffect(() => {
     if (position.lat === 0 || !session) return;
-
     const fetchInitial = async () => {
       const { data } = await supabase.from('voxels').select('*');
       if (data) data.forEach((v: Voxel) => addVoxelLocally(v));
     };
-
     const channel = supabase.channel('voxels_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, 
-        (p) => addVoxelLocally(p.new as Voxel))
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, 
-        (p) => {
-          const deletedId = (p.old as { id: string }).id;
-          const mesh = voxelsMap.current.get(deletedId);
-          if (mesh) {
-            sceneRef.current.remove(mesh);
-            voxelsMap.current.delete(deletedId);
-          }
-        })
-      .subscribe();
-
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new as Voxel))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
+          const mesh = voxelsMap.current.get((p.old as any).id);
+          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete((p.old as any).id); }
+      }).subscribe();
     fetchInitial();
     return () => { supabase.removeChannel(channel); };
   }, [position.lat, session]);
 
   if (!session) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-black text-white z-[10000]">
-        <div className="flex flex-col items-center">
-          <div id="googleButton" className="mb-4" />
-          {!authReady && <p className="text-sm opacity-70">Loading Google Sign-In…</p>}
-        </div>
+      <div className="fixed inset-0 flex items-center justify-center bg-black z-[10000]">
+        <div id="googleButton" />
       </div>
     );
   }
 
   return (
     <>
-      <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]">
+      <div 
+        id="ar-overlay" 
+        className="fixed inset-0 pointer-events-none z-[9999]"
+        onPointerDown={() => { isInteractingWithUI.current = true; }}
+      >
         <div className="fixed top-4 left-4 flex flex-col gap-2 pointer-events-auto">
           <div className="bg-black/60 p-2 text-white text-[10px] rounded backdrop-blur-md border border-white/10">
             GPS: {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
           </div>
           <button 
-            onClick={requestCompass}
-            className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg active:scale-95 transition-transform"
+            onClick={(e) => { e.stopPropagation(); requestCompass(); }}
+            className="bg-white text-black text-[10px] font-bold px-3 py-2 rounded-full shadow-lg"
           >
             {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
           </button>
         </div>
         
-        {isPlacing && (
-          <div className="absolute bottom-8 left-0 right-0 flex justify-center pointer-events-auto">
-            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
-          </div>
-        )}
+        <div 
+          className="absolute bottom-12 left-0 right-0 flex justify-center pointer-events-auto"
+          onPointerDown={(e) => { e.stopPropagation(); isInteractingWithUI.current = true; }}
+        >
+          <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
+        </div>
       </div>
       <div ref={mountRef} className="fixed inset-0" />
     </>
