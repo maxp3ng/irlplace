@@ -21,7 +21,9 @@ export default function Viewer({ session }: { session: any }) {
   const ghostRef = useRef<THREE.Mesh | null>(null);
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+
+  const rendererRef = useRef<THREE.WebGLRenderer>(new THREE.WebGLRenderer());
+    // const rendererRef = useRef<THREE.WebGLRenderer| null>(null);
 
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);

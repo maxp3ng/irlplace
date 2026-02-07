@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/utils/supabase';
+import * as THREE from "three";
+
 
 interface MainMenuProps {
   session: any;
