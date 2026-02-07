@@ -76,7 +76,7 @@ export default function Auth() {
               placeholder="USERNAME"
               value={username}
               onChange={(e) => setUsername(e.target.value.trim())}
-              className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white placeholder:text-white/20 focus:outline-none focus:border-white/40 transition-colors uppercase text-sm"
+              className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white placeholder:text-white/20 focus:outline-none focus:border-white/40 transition-colors text-sm"
               required
             />
             <input
