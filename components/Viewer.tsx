@@ -140,6 +140,13 @@ export default function Viewer() {
     };
   }, []);
 
+  // --- ANONYMOUS SIGN-IN ---
+  const signInAnonymously = async () => {
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) console.error(error);
+    else setSession(data.session);
+  };
+
   const requestCompass = async () => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
       const heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
@@ -236,7 +243,15 @@ export default function Viewer() {
     return () => { supabase.removeChannel(channel); };
   }, [position.lat, session]);
 
-  if (!session) return <div className="fixed inset-0 bg-black flex items-center justify-center text-white">Authenticating...</div>;
+  // --- RENDER ---
+  if (!session) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-black text-white gap-4">
+        <button onClick={signInAnonymously} className="px-6 py-3 bg-blue-500 rounded-lg shadow-lg">Sign In Anonymously</button>
+        <div>Or sign in with Google...</div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -246,7 +261,6 @@ export default function Viewer() {
         onPointerDown={() => { isInteractingWithUIRef.current = true; }}
         onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
       >
-        {/* HUD */}
         {!isDrafting && (
           <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
             <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 shadow-2xl">
@@ -263,7 +277,6 @@ export default function Viewer() {
           </div>
         )}
 
-        {/* Bottom Controls */}
         <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls 
