@@ -1,9 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/utils/supabase';
 import * as THREE from "three";
-
 
 interface MainMenuProps {
   session: any;
@@ -20,9 +19,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   // --- Leaderboard ---
   useEffect(() => {
     const fetchLeaderboard = async () => {
-      const { data } = await supabase
-        .from('voxels')
-        .select('user_id')
+      const { data } = await supabase.from('voxels').select('user_id');
       if (!data) return;
 
       const counts: Record<string, number> = {};
@@ -32,15 +29,11 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
         .map(([user_id, blocks]) => ({ user_id, blocks }))
         .sort((a, b) => b.blocks - a.blocks);
 
-      // Fetch display names
+      // fetch display names
       const userIds = lb.map(l => l.user_id);
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, display_name')
-        .in('id', userIds);
+      const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', userIds);
       const profileMap: Record<string, string> = {};
       profiles?.forEach(p => profileMap[p.id] = p.display_name || '');
-
       setLeaderboard(lb.map(l => ({ ...l, display_name: profileMap[l.user_id] || '' })));
     };
     fetchLeaderboard();
@@ -59,43 +52,71 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
     if (!rendererRef.current || !session) return;
     setCapturing(true);
 
-    // Hide UI temporarily
     const overlay = document.getElementById('ar-overlay');
     if (overlay) overlay.style.display = 'none';
 
     requestAnimationFrame(async () => {
       const canvas = rendererRef.current!.domElement;
       canvas.toBlob(async (blob) => {
-        if (!blob) { setCapturing(false); overlay && (overlay.style.display = ''); return; }
-        const fileName = `screenshot-${Date.now()}.png`;
-        await supabase.storage.from('gallery').upload(fileName, blob, { upsert: true });
-        const publicUrl = supabase.storage.from('gallery').getPublicUrl(fileName).data.publicUrl;
-        await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: publicUrl }]);
-        setGallery([{ id: fileName, image_url: publicUrl, user_id: session.user.id }, ...gallery]);
+        if (!blob) {
+          setCapturing(false);
+          if (overlay) overlay.style.display = '';
+          return;
+        }
+
+        // generate path: screenshots/userId/timestamp.png
+        const path = `screenshots/${session.user.id}/screenshot-${Date.now()}.png`;
+
+        // upload to Supabase Storage
+        const { error: uploadError } = await supabase.storage.from('gallery').upload(path, blob, { upsert: true });
+        if (uploadError) {
+          console.error(uploadError);
+          setCapturing(false);
+          if (overlay) overlay.style.display = '';
+          return;
+        }
+
+        // get public URL
+        const { data: urlData, error: urlError } = supabase.storage.from('gallery').getPublicUrl(path);
+        if (urlError) {
+          console.error(urlError);
+          setCapturing(false);
+          if (overlay) overlay.style.display = '';
+          return;
+        }
+
+        // insert into gallery table
+        const { error: dbError, data: dbData } = await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: urlData.publicUrl }]).select().single();
+        if (dbError) {
+          console.error(dbError);
+        } else if (dbData) {
+          setGallery([dbData, ...gallery]);
+        }
+
         setCapturing(false);
-        overlay && (overlay.style.display = '');
+        if (overlay) overlay.style.display = '';
       });
     });
   };
 
   // --- Settings ---
   const updateDisplayName = async () => {
-    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName});
-    session.user.user_metadata = { ...session.user.user_metadata, display_name: displayName};
+    await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName });
+    session.user.user_metadata = { ...session.user.user_metadata, display_name };
   };
 
   return (
     <div className="fixed top-4 right-4 bg-black/70 text-white p-4 rounded-xl w-72 pointer-events-auto z-[10000]">
-      {/* Tab buttons */}
+      {/* Tabs */}
       <div className="flex justify-between mb-2">
         <button className={`px-2 py-1 rounded ${activeTab==='leaderboard'?'bg-white/30':''}`} onClick={() => setActiveTab('leaderboard')}>Leaderboard</button>
         <button className={`px-2 py-1 rounded ${activeTab==='gallery'?'bg-white/30':''}`} onClick={() => setActiveTab('gallery')}>Gallery</button>
         <button className={`px-2 py-1 rounded ${activeTab==='settings'?'bg-white/30':''}`} onClick={() => setActiveTab('settings')}>Settings</button>
       </div>
 
-      {/* Tab content */}
+      {/* Content */}
       <div className="max-h-80 overflow-y-auto">
-        {activeTab === 'leaderboard' && (
+        {activeTab==='leaderboard' && (
           <div className="flex flex-col gap-2">
             {leaderboard.map((l, i) => (
               <div key={i} className="flex justify-between border-b border-white/20 pb-1">
@@ -106,7 +127,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
           </div>
         )}
 
-        {activeTab === 'gallery' && (
+        {activeTab==='gallery' && (
           <div className="flex flex-col gap-2">
             <button onClick={captureScreenshot} className="bg-green-500 px-3 py-1 rounded mb-2">{capturing?'Capturing...':'Capture Screenshot'}</button>
             {gallery.map(g => (
@@ -115,7 +136,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
           </div>
         )}
 
-        {activeTab === 'settings' && (
+        {activeTab==='settings' && (
           <div className="flex flex-col gap-2">
             <label className="text-[12px]">Display Name</label>
             <input
