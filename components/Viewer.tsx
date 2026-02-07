@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
-import { ARButton } from "three/addons/webxr/ARButton.js";
+// Change: Import our CustomARButton instead of the default one
+import { CustomARButton } from "@/utils/CustomARButton"; 
 import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
 import MainMenu from '@/components/MainMenu';
 
@@ -137,9 +138,12 @@ export default function Viewer({ session }: { session: any }) {
       alpha: true, 
       preserveDrawingBuffer: true 
     });
-    renderer.setClearColor(0x000000, 0); // Essential for iOS camera feed
+    // Set alpha to 0 and transparent background for iOS
+    renderer.setClearColor(0x000000, 0); 
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -155,7 +159,12 @@ export default function Viewer({ session }: { session: any }) {
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
-    const triggerDrafting = () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); };
+    // iOS Select Event fix: ensure UI block is checked
+    const triggerDrafting = () => { 
+      if (!isInteractingWithUIRef.current) {
+        setIsDrafting(true); 
+      }
+    };
     controller.addEventListener('select', triggerDrafting);
     sceneRef.current.add(controller);
 
@@ -174,20 +183,21 @@ export default function Viewer({ session }: { session: any }) {
       renderer.render(sceneRef.current, camera);
     });
 
-    // Provide the overlay root to ARButton to sync with its internal display toggling
-    const button = ARButton.createButton(renderer, { 
-      requiredFeatures: ['local-floor'], 
-      optionalFeatures: ['dom-overlay'], 
-      domOverlay: { root: overlay! } 
-    });
-    document.body.appendChild(button);
+    // Use CustomARButton with dom-overlay as a REQUIRED feature
+    if (overlay) {
+      const button = CustomARButton.createButton(renderer, { 
+        requiredFeatures: ['local-floor', 'dom-overlay'], 
+        domOverlay: { root: overlay } 
+      });
+      document.body.appendChild(button);
 
-    return () => {
-      sceneRef.current.remove(ghost, light, controller);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      if (document.body.contains(button)) document.body.removeChild(button);
-    };
+      return () => {
+        sceneRef.current.remove(ghost, light, controller);
+        renderer.setAnimationLoop(null);
+        renderer.dispose();
+        if (document.body.contains(button)) document.body.removeChild(button);
+      };
+    }
   }, [!!session, !!geoConstants]);
 
   useEffect(() => {
@@ -213,16 +223,26 @@ export default function Viewer({ session }: { session: any }) {
     loadAndListen();
   }, [position.lat, !!session]);
 
-  const blockUI = () => { isInteractingWithUIRef.current = true; };
-  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 200); };
+  // Enhanced block handlers for iOS pointer events
+  const blockUI = (e: any) => { 
+    isInteractingWithUIRef.current = true;
+    e.stopPropagation();
+  };
+  const unblockUI = () => { 
+    setTimeout(() => { isInteractingWithUIRef.current = false; }, 250); 
+  };
 
   return (
     <>
-      {/* 1. UI LAYER (Matches display logic in ARButton.js) */}
-      <div id="ar-overlay" style={{ display: 'none' }} className="pointer-events-none">
+      {/* UI LAYER: Controlled by CustomARButton + data-xr-active */}
+      <div 
+        id="ar-overlay" 
+        style={{ display: 'none' }} 
+        className="pointer-events-none"
+      >
         <div className="relative w-full h-full pointer-events-none">
           <div 
-            className="absolute top-8 left-8 pointer-events-auto"
+            className="absolute top-10 left-6 pointer-events-auto"
             onPointerDown={blockUI} onPointerUp={unblockUI}
             onTouchStart={blockUI} onTouchEnd={unblockUI}
           >
@@ -243,7 +263,7 @@ export default function Viewer({ session }: { session: any }) {
         </div>
       </div>
 
-      {/* 2. CANVAS LAYER */}
+      {/* CANVAS CONTAINER */}
       <div ref={mountRef} className="fixed inset-0 z-0" />
     </>
   );

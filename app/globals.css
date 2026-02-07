@@ -1,21 +1,25 @@
 @import "tailwindcss";
 
-/* 1. Reset for iOS WebXR Viewer "Punch-Through" 
-   Mozilla's viewer needs the background to be transparent 
-   to see the camera feed. 
+/* 1. Global Reset 
+   We force transparency on all possible parent containers. 
+   If any parent has a solid background, the iOS camera feed will stay black.
 */
-:root, body {
+:root, 
+body, 
+#__next, 
+main {
   background-color: transparent !important;
+  background: none !important;
   margin: 0;
+  padding: 0;
   overflow: hidden;
 }
 
 /* 2. The AR Overlay Root
-   We avoid using 'display: none' here because ARButton will 
-   control that property directly in the DOM. 
+   Initial state is 'display: none' (set in your JSX/Viewer.tsx).
+   The CustomARButton will toggle this to 'block'.
 */
 #ar-overlay {
-  /* Layout instructions for when the button makes it visible */
   position: absolute;
   inset: 0;
   width: 100vw;
@@ -23,25 +27,44 @@
   z-index: 9999;
   pointer-events: none;
   background: transparent !important;
-  
-  /* Critical for iOS: Ensure the UI doesn't clip */
   overflow: visible;
   -webkit-tap-highlight-color: transparent;
+  
+  /* Ensure it's hidden properly even if 'display' logic flickers */
+  visibility: hidden;
 }
 
-/* 3. Standard Utilities */
+/* 3. AR Active State
+   Triggered by your CustomARButton via setAttribute('data-xr-active', 'true')
+*/
+[data-xr-active="true"]#ar-overlay {
+  visibility: visible !important;
+  display: block !important;
+  /* Double-down on transparency for the iOS "Punch-through" effect */
+  background: transparent !important;
+}
+
+/* 4. Three.js Canvas Fix
+   Prevents the 3D canvas from swallowing touches intended for your buttons
+*/
+canvas {
+  pointer-events: none !important;
+}
+
+/* 5. Interactive Elements
+   Re-enable touch for anything you actually want to click
+*/
 .pointer-events-auto {
   pointer-events: auto !important;
 }
 
+/* 6. Scrollbar Styling */
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }
-
 .custom-scrollbar::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.05);
 }
-
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2);
   border-radius: 10px;
