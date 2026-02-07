@@ -4,14 +4,19 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
-import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
+import { 
+  ColorPicker, 
+  COLORS, 
+  PlacementControls
+} from '@/components/UIComponents';
 
+/** * CONSTANTS 
+ */
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
 const Z_OFFSET = -1.2;
 const VIEW_RADIUS_METERS = 50;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
-
 const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
 
 interface Voxel {
@@ -24,53 +29,74 @@ interface Voxel {
 }
 
 export default function Viewer() {
+  // --- REFS (Engine & Logic) ---
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
   const ghostRef = useRef<THREE.Mesh | null>(null);
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
-  
+  const isDraftingRef = useRef(false);
+  const isInteractingWithUIRef = useRef(false);
   const selectedColorRef = useRef(COLORS[0]);
   const sessionRef = useRef<any>(null);
-  const isInteractingWithUI = useRef(false);
 
-  // --- NEW: PLACEMENT STATE ---
+  // --- STATE (UI) ---
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [session, setSession] = useState<any>(null);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
+  // Sync state to refs for use in the frame loop
+  useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => {
+    selectedColorRef.current = selectedColor;
+    if (ghostRef.current) {
+      (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
+    }
+  }, [selectedColor]);
+
+  // Pre-calculate snapping ratios to keep the loop performant
   const geoConstants = useMemo(() => {
     if (!position.lat) return null;
     const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
-    return { lonScale, latRatio: METERS_PER_DEGREE / VOXEL_SNAP, lonRatio: lonScale / VOXEL_SNAP };
+    return {
+      lonScale,
+      latRatio: METERS_PER_DEGREE / VOXEL_SNAP,
+      lonRatio: lonScale / VOXEL_SNAP
+    };
   }, [!!position.lat]);
-
-  useEffect(() => {
-    selectedColorRef.current = selectedColor;
-    if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
-  }, [selectedColor]);
-
-  useEffect(() => { sessionRef.current = session; }, [session]);
 
   const addVoxelLocally = (voxel: Voxel) => {
     if (voxelsMap.current.has(voxel.id)) return;
-    const origin = originGps.current!;
+    
+    // Radius check
+    const distLat = Math.abs(voxel.lat - latestPos.current.lat);
+    const distLon = Math.abs(voxel.lon - latestPos.current.lng);
+    if (distLat > DEGREE_THRESHOLD || distLon > DEGREE_THRESHOLD) return;
+
+    const origin = originGps.current || { lat: voxel.lat, lng: voxel.lon };
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
       new THREE.MeshPhongMaterial({ color: voxel.color })
     );
-    mesh.position.set((voxel.lon - origin.lng) * lonScale, voxel.alt, -(voxel.lat - origin.lat) * METERS_PER_DEGREE);
+    
+    mesh.position.set(
+      (voxel.lon - origin.lng) * lonScale,
+      voxel.alt,
+      -(voxel.lat - origin.lat) * METERS_PER_DEGREE
+    );
     (mesh as any).user_id = voxel.user_id;
+
     sceneRef.current.add(mesh);
     voxelsMap.current.set(voxel.id, mesh);
   };
 
-  // --- PLACEMENT HANDLERS ---
+  // --- HANDLERS ---
   const handleMove = (axis: 'x' | 'y' | 'z', steps: number) => {
     if (!ghostRef.current) return;
     ghostRef.current.position[axis] += (steps * VOXEL_SNAP);
@@ -92,51 +118,89 @@ export default function Viewer() {
       user_id: currentSession.user.id
     };
 
-    const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
-    if (data) addVoxelLocally(data as Voxel);
+    // Optimistic Update
+    const tempId = `temp-${Date.now()}`;
+    addVoxelLocally({ ...voxelData, id: tempId, user_id: currentSession.user.id });
+
+    await supabase.from('voxels').insert([voxelData]);
     setIsDrafting(false);
+  };
+
+  // ---------------- AUTH & SENSORS ----------------
+  useEffect(() => {
+    // Google Sign-In Logic
+    let script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    document.body.appendChild(script);
+
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+
+    // Geolocation
+    const watchId = navigator.geolocation.watchPosition(pos => {
+      latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setPosition(latestPos.current);
+      if (!originGps.current) originGps.current = { ...latestPos.current };
+    }, null, { enableHighAccuracy: true });
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      authListener.subscription.unsubscribe();
+      script.remove();
+    };
+  }, []);
+
+  const requestCompass = async () => {
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      const heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
+      if (heading !== undefined) {
+        sceneRef.current.rotation.y = -THREE.MathUtils.degToRad(heading);
+        setAligned(true);
+      }
+    };
+    if (typeof (DeviceOrientationEvent as any).requestPermission === "function") {
+      const perm = await (DeviceOrientationEvent as any).requestPermission();
+      if (perm === "granted") window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+    } else window.addEventListener('deviceorientationabsolute', handleOrientation, true);
   };
 
   // ---------------- AR ENGINE ----------------
   useEffect(() => {
     if (!mountRef.current || !session) return;
 
-    const scene = sceneRef.current;
-    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+    sceneRef.current.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3));
 
     const ghost = new THREE.Mesh(
       new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
-      new THREE.MeshPhongMaterial({ color: selectedColorRef.current.hex, transparent: true, opacity: 0.5 })
+      new THREE.MeshPhongMaterial({ 
+        color: selectedColorRef.current.hex, 
+        transparent: true, 
+        opacity: 0.5 
+      })
     );
-    scene.add(ghost);
+    sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
-    const onSelect = () => {
-      if (isInteractingWithUI.current) return;
-      // If we aren't drafting, start drafting at the current reticle position
-      setIsDrafting(true);
-    };
-
     const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', onSelect);
-    scene.add(controller);
+    controller.addEventListener('select', () => {
+      if (isInteractingWithUIRef.current) return;
+      setIsDrafting(true);
+    });
+    sceneRef.current.add(controller);
 
     renderer.setAnimationLoop(() => {
-      if (!geoConstants || !originGps.current) {
-        renderer.render(scene, camera);
-        return;
-      }
-
-      // ONLY track the camera gaze if we are NOT currently using the D-Pad to nudge
-      if (!isDrafting) {
+      // Only track gaze if not currently drafting/nudging
+      if (!isDraftingRef.current && geoConstants && originGps.current) {
         camera.updateMatrixWorld();
         const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
-        scene.worldToLocal(targetPos);
+        sceneRef.current.worldToLocal(targetPos);
 
         const { lonScale, latRatio, lonRatio } = geoConstants;
         const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
@@ -148,8 +212,7 @@ export default function Viewer() {
           -snapLat * METERS_PER_DEGREE
         );
       }
-      
-      renderer.render(scene, camera);
+      renderer.render(sceneRef.current, camera);
     });
 
     const overlay = document.getElementById('ar-overlay');
@@ -160,31 +223,63 @@ export default function Viewer() {
     });
     document.body.appendChild(button);
 
-    return () => { 
-      controller.removeEventListener('select', onSelect);
+    return () => {
       renderer.setAnimationLoop(null);
-      renderer.dispose(); 
+      renderer.dispose();
+      if (document.body.contains(button)) document.body.removeChild(button);
     };
-  }, [session, !!geoConstants, isDrafting]); // Note: isDrafting dependency pauses the reticle tracking
+  }, [session, !!geoConstants]); // engine stays alive across drafting toggles
 
-  // (Auth and Geolocation effects remain the same as previous implementation)
-  // ... (keeping implementation brief to focus on the PlacementControls hookup)
+  // ---------------- DATA ----------------
+  useEffect(() => {
+    if (position.lat === 0 || !session) return;
+    
+    const fetchRadius = async () => {
+      const { data } = await supabase.from('voxels').select('*')
+        .gte('lat', position.lat - DEGREE_THRESHOLD)
+        .lte('lat', position.lat + DEGREE_THRESHOLD)
+        .gte('lon', position.lng - DEGREE_THRESHOLD)
+        .lte('lon', position.lng + DEGREE_THRESHOLD);
+      if (data) data.forEach((v: Voxel) => addVoxelLocally(v));
+    };
+
+    const channel = supabase.channel('voxels_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new as Voxel))
+      .subscribe();
+
+    fetchRadius();
+    return () => { supabase.removeChannel(channel); };
+  }, [position.lat, session]);
+
+  if (!session) return <div className="fixed inset-0 bg-black flex items-center justify-center text-white">Authenticating...</div>;
 
   return (
     <>
-      <div id="ar-overlay" className="fixed inset-0 pointer-events-none z-[9999]" onPointerDown={() => { isInteractingWithUI.current = true; }}>
-        
-        {/* HUD Top Left */}
+      <div 
+        id="ar-overlay" 
+        className="fixed inset-0 pointer-events-none z-[9999]"
+        onPointerDown={() => { isInteractingWithUIRef.current = true; }}
+        onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
+      >
+        {/* HUD */}
         {!isDrafting && (
           <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
-             {/* Compass/GPS UI */}
+            <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 font-mono shadow-2xl">
+              GPS: {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
+            </div>
+            <button 
+              onClick={(e) => { e.stopPropagation(); requestCompass(); }}
+              className={`px-4 py-2 rounded-full text-[10px] font-bold shadow-xl border transition-all ${
+                aligned ? "bg-green-500/20 border-green-500/50 text-green-400" : "bg-white text-black border-white"
+              }`}
+            >
+              {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
+            </button>
           </div>
         )}
 
-        {/* BOTTOM UI AREA */}
-        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto" 
-             onPointerDown={(e) => { e.stopPropagation(); isInteractingWithUI.current = true; }}>
-          
+        {/* Controls Area */}
+        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls 
               onMove={handleMove} 
