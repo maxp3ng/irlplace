@@ -4,47 +4,16 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/utils/supabase";
 import Viewer from "@/components/Viewer";
 
-const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
-
 export default function Auth() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    let interval: number | null = null;
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    document.body.appendChild(script);
-
-    const waitForGoogle = () => {
-      // @ts-ignore
-      if (!window.google?.accounts?.id) return;
-      if (interval) window.clearInterval(interval);
-
-      // @ts-ignore
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: async (res: any) => {
-          const { data, error } = await supabase.auth.signInWithIdToken({
-            provider: "google",
-            token: res.credential,
-          });
-          if (!error) setSession(data.session);
-        },
-      });
-
-      const render = () => {
-        const btn = document.getElementById("googleButton");
-        if (!btn) { requestAnimationFrame(render); return; }
-        // @ts-ignore
-        window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large", width: 260 });
-      };
-      render();
-    };
-
-    interval = window.setInterval(waitForGoogle, 120);
-
+    // Initial session check
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) setSession(data.session);
       setLoading(false);
@@ -53,17 +22,68 @@ export default function Auth() {
     const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
 
     return () => {
-      if (interval) window.clearInterval(interval);
       authListener.subscription.unsubscribe();
     };
   }, []);
 
-  if (loading) return <div className="fixed inset-0 bg-black flex items-center justify-center text-white font-mono">LOADING...</div>;
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg("");
+    
+    const { data, error } = isSignUp 
+      ? await supabase.auth.signUp({ email, password })
+      : await supabase.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      setErrorMsg(error.message);
+    } else if (isSignUp && !data.session) {
+      setErrorMsg("Check your email for a confirmation link!");
+    }
+  };
+
+  if (loading) return <div className="fixed inset-0 bg-black flex items-center justify-center text-white font-mono tracking-tighter">LOADING_SYSTEM...</div>;
 
   if (!session) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-black z-[10000]">
-        <div id="googleButton" />
+      <div className="fixed inset-0 flex items-center justify-center bg-black z-[10000] p-6">
+        <div className="w-full max-w-sm space-y-8">
+          <div className="text-center">
+            <h1 className="text-white text-2xl font-black tracking-tighter uppercase">Voxel_Login</h1>
+            <p className="text-white/40 text-[10px] uppercase tracking-widest mt-2">Enter credentials to proceed</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <input
+              type="email"
+              placeholder="EMAIL"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white placeholder:text-white/20 focus:outline-none focus:border-white/40 transition-colors"
+              required
+            />
+            <input
+              type="password"
+              placeholder="PASSWORD"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white placeholder:text-white/20 focus:outline-none focus:border-white/40 transition-colors"
+              required
+            />
+            
+            {errorMsg && <p className="text-red-500 text-[10px] font-bold text-center uppercase tracking-tight">{errorMsg}</p>}
+
+            <button type="submit" className="w-full bg-white text-black font-black py-4 rounded-2xl active:scale-95 transition-transform uppercase tracking-widest text-xs">
+              {isSignUp ? "Create Account" : "Initialize Session"}
+            </button>
+          </form>
+
+          <button 
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="w-full text-white/40 text-[10px] uppercase tracking-widest hover:text-white transition-colors"
+          >
+            {isSignUp ? "Already have a login? Sign In" : "Need an account? Sign Up"}
+          </button>
+        </div>
       </div>
     );
   }
