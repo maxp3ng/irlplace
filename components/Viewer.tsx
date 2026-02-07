@@ -8,7 +8,7 @@ import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponent
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
-const Z_OFFSET = -1.5; // Fixed the sign to keep it in front of the camera
+const Z_OFFSET = -1.2; // Negative is IN FRONT of camera
 const VIEW_RADIUS_METERS = 500;
 const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
 
@@ -30,8 +30,8 @@ export default function Viewer({ session }: { session: any }) {
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
+  // Sync Refs
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
-  useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
@@ -47,9 +47,12 @@ export default function Viewer({ session }: { session: any }) {
     if (voxelsMap.current.has(voxel.id)) return;
     const origin = originGps.current || { lat: voxel.lat, lng: voxel.lon };
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
+    
+    // Calculate world position relative to our session origin
     const targetX = (voxel.lon - origin.lng) * lonScale;
     const targetZ = -(voxel.lat - origin.lat) * METERS_PER_DEGREE;
     
+    // Proximity shield (5cm)
     let exists = false;
     voxelsMap.current.forEach((m) => {
       if (Math.abs(m.position.x - targetX) < 0.05 && 
@@ -77,7 +80,7 @@ export default function Viewer({ session }: { session: any }) {
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-    const tempId = `temp-${Date.now()}`;
+
     const voxelData = {
       lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
       lon: origin.lng + (localPos.x / lonScale),
@@ -86,7 +89,9 @@ export default function Viewer({ session }: { session: any }) {
       user_id: sessionRef.current.user.id
     };
 
+    const tempId = `temp-${Date.now()}`;
     addVoxelLocally({ ...voxelData, id: tempId });
+    
     const { data } = await supabase.from('voxels').insert([voxelData]).select().single();
     if (data) {
       const mesh = voxelsMap.current.get(tempId);
@@ -111,6 +116,7 @@ export default function Viewer({ session }: { session: any }) {
     const handleOrientation = (event: DeviceOrientationEvent) => {
       const heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
       if (heading !== undefined) {
+        // Rotate the scene so 0,0,0 Z-axis points North
         sceneRef.current.rotation.y = -THREE.MathUtils.degToRad(heading);
         setAligned(true);
       }
@@ -140,22 +146,28 @@ export default function Viewer({ session }: { session: any }) {
     ghostRef.current = ghost;
 
     const controller = renderer.xr.getController(0);
-    const onSelect = () => {
-        if (isInteractingWithUIRef.current) return;
-        setIsDrafting(true);
-    };
-    controller.addEventListener('select', onSelect);
+    controller.addEventListener('select', () => {
+        if (!isInteractingWithUIRef.current) setIsDrafting(true);
+    });
     sceneRef.current.add(controller);
 
     renderer.setAnimationLoop(() => {
       if (!isDraftingRef.current && geoConstants && originGps.current) {
-        camera.updateMatrixWorld();
-        const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
-        sceneRef.current.worldToLocal(targetPos);
+        // 1. Get position 1.2m in front of camera in WORLD space
+        const worldTarget = new THREE.Vector3(0, 0, Z_OFFSET);
+        worldTarget.applyMatrix4(camera.matrixWorld);
+
+        // 2. Convert that world position to our aligned SCENE space
+        const localTarget = sceneRef.current.worldToLocal(worldTarget.clone());
+
         const { lonScale, latRatio, lonRatio } = geoConstants;
-        const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
-        const snapLon = Math.round((targetPos.x / lonScale) * lonRatio) / lonRatio;
-        ghostRef.current?.position.set(snapLon * lonScale, Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP, -snapLat * METERS_PER_DEGREE);
+        
+        // 3. Snap the local scene coordinates to the GPS grid
+        const snapX = Math.round(localTarget.x / VOXEL_SNAP) * VOXEL_SNAP;
+        const snapY = Math.round(localTarget.y / VOXEL_SNAP) * VOXEL_SNAP;
+        const snapZ = Math.round(localTarget.z / VOXEL_SNAP) * VOXEL_SNAP;
+
+        ghostRef.current?.position.set(snapX, snapY, snapZ);
       }
       renderer.render(sceneRef.current, camera);
     });
@@ -169,10 +181,7 @@ export default function Viewer({ session }: { session: any }) {
     document.body.appendChild(button);
 
     return () => {
-        controller.removeEventListener('select', onSelect);
-        sceneRef.current.remove(ghost);
-        sceneRef.current.remove(light);
-        sceneRef.current.remove(controller);
+        sceneRef.current.remove(ghost, light, controller);
         renderer.setAnimationLoop(null);
         renderer.dispose();
         if (document.body.contains(button)) document.body.removeChild(button);
@@ -205,7 +214,7 @@ export default function Viewer({ session }: { session: any }) {
            onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}>
         
         <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
-          <button onClick={requestCompass} className={`px-4 py-2 rounded-full text-[10px] font-bold border ${aligned ? "bg-green-500/20 text-green-400 border-green-500/50" : "bg-white text-black border-white"}`}>
+          <button onClick={requestCompass} className={`px-4 py-2 rounded-full text-[10px] font-bold border transition-colors ${aligned ? "bg-green-500/20 text-green-400 border-green-500/50" : "bg-white text-black border-white"}`}>
             {aligned ? "NORTH LOCKED" : "ALIGN COMPASS"}
           </button>
         </div>
