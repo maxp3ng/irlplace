@@ -89,9 +89,9 @@ export const PlacementControls = ({ onMove, onCancel, onConfirm }: any) => (
          <button onClick={() => onMove('y', -1)} className="flex-1 bg-black/60 backdrop-blur-md rounded-b-xl flex items-center justify-center text-[10px] font-black text-white border border-white/10 border-t-0 active:bg-white active:text-black hover:bg-white/10">DN</button>
       </div>
       <button onClick={() => onMove('x', 1)} className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-2xl flex items-center justify-center text-white border border-white/10 active:bg-white active:text-black transition-colors shadow-lg"><Icons.ChevronRight /></button>
-        <div />
+      <div />
       <button onClick={() => onMove('z', 1)} className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-2xl flex items-center justify-center text-white border border-white/10 active:bg-white active:text-black transition-colors shadow-lg"><Icons.ChevronDown /></button>
-        <div />
+      <div />
     </div>
 
     {/* Floating Action Buttons */}

@@ -70,7 +70,7 @@ export default function App() {
         <div className="absolute top-0 w-full pt-14 px-6 flex justify-between">
           <div className="bg-black/60 backdrop-blur-xl px-4 py-2 rounded-full border border-white/10 flex items-center gap-2 shadow-lg">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-[10px] font-black text-white uppercase tracking-widest">Nodes Online: {voxels.length}</span>
+            <span className="text-[10px] font-black text-white uppercase tracking-widest">ONLINE: {voxels.length}</span>
           </div>
         </div>
 
