@@ -15,7 +15,7 @@ export default function Viewer() {
   const [voxels, setVoxels] = useState<Voxel[]>([]);
 
   // --- GPS state ---
-  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [geoError, setGeoError] = useState<string | null>(null);
 
   // --- Get GPS location on start ---
@@ -98,14 +98,14 @@ export default function Viewer() {
     controller.addEventListener("select", () => {
       const material = new THREE.MeshPhongMaterial({ color: 0xffffff * Math.random() });
       const mesh = new THREE.Mesh(geometry, material);
-      confirmPlacement();
       // Spawn in front of controller
       mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
       mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
-      position.x = Math.round(position.x);
-      position.y = Math.round(position.y);
-      position.z = Math.round(position.z);
-      mesh.position.copy(position);
+      if(!position) return;
+      position.lat = Math.round(position.lat);
+      position.lng = Math.round(position.lng);
+      confirmPlacement();
+      mesh.position.copy(new THREE.Vector3(position.lat,position.lng,0));
 
       mesh.up.set(0, 1, 0);
       mesh.rotation.set(-Math.PI / 2, 0, 0); // align along Z
