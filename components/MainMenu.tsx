@@ -16,7 +16,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   const [displayName, setDisplayName] = useState(session?.user?.user_metadata?.display_name || '');
   const [capturing, setCapturing] = useState(false);
 
-  const userId = session?.user?.id;
+  const userId = session?.user?.user_id;
 
   // --- Leaderboard ---
   useEffect(() => {
