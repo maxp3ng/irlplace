@@ -104,7 +104,7 @@ export default function MainMenu({ session, rendererRef }: MainMenuProps) {
   const updateDisplayName = async () => {
     if (!session?.user?.id) return;
     await supabase.from('profiles').upsert({ id: session.user.id, display_name: displayName });
-    session.user.user_metadata = { ...session.user.user_metadata, display_name };
+    session.user.user_metadata = { ...session.user.user_metadata, displayName };
   };
 
   return (

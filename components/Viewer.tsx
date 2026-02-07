@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
@@ -22,7 +22,6 @@ export default function Viewer({ session }: { session: any }) {
   const originGps = useRef<{ lat: number; lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const geoConstantsRef = useRef<{ lonScale: number } | null>(null);
 
   const isDraftingRef = useRef(false);
   const isInteractingWithUIRef = useRef(false);
@@ -33,6 +32,7 @@ export default function Viewer({ session }: { session: any }) {
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
+  const [aligned, setAligned] = useState(false);
 
   // --- Sync refs ---
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
@@ -42,15 +42,14 @@ export default function Viewer({ session }: { session: any }) {
     if (ghostRef.current) (ghostRef.current.material as THREE.MeshPhongMaterial).color.set(selectedColor.hex);
   }, [selectedColor]);
 
-  // Update GPS math without triggering useEffect re-runs
-  useEffect(() => {
-    if (position.lat) {
-      const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
-      geoConstantsRef.current = { lonScale };
-    }
+  // --- Geo constants ---
+  const geoConstants = useMemo(() => {
+    if (!position.lat) return null;
+    const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
+    return { lonScale, latRatio: METERS_PER_DEGREE / VOXEL_SNAP, lonRatio: lonScale / VOXEL_SNAP };
   }, [position.lat]);
 
-  // --- Core Voxel Logic ---
+  // --- Add voxel ---
   const addVoxelLocally = (voxel: any) => {
     if (voxelsMap.current.has(voxel.id)) return;
     if (!originGps.current) originGps.current = { lat: voxel.lat, lng: voxel.lon };
@@ -69,22 +68,29 @@ export default function Viewer({ session }: { session: any }) {
     voxelsMap.current.set(voxel.id, mesh);
   };
 
+  // --- Move voxel ghost ---
   const handleMove = (axis: 'x' | 'y' | 'z', steps: number) => {
     if (!ghostRef.current) return;
     ghostRef.current.position[axis] += VOXEL_SNAP * steps;
   };
 
+  // --- Confirm voxel ---
   const handleConfirm = async () => {
-    if (!ghostRef.current || !sessionRef.current || !originGps.current || !geoConstantsRef.current) return;
+    if (!ghostRef.current || !sessionRef.current || !originGps.current) return;
 
     const localPos = ghostRef.current.position.clone();
     const origin = originGps.current;
-    const { lonScale } = geoConstantsRef.current;
+    const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
+    // --- Delete if overlapping ---
     let existingId: string | null = null;
     let existingMesh: THREE.Mesh | null = null;
     voxelsMap.current.forEach((mesh, id) => {
-      if (mesh.position.distanceTo(localPos) < 0.05) {
+      if (
+        Math.abs(mesh.position.x - localPos.x) < 0.05 &&
+        Math.abs(mesh.position.z - localPos.z) < 0.05 &&
+        Math.abs(mesh.position.y - localPos.y) < 0.05
+      ) {
         existingId = id;
         existingMesh = mesh;
       }
@@ -100,6 +106,7 @@ export default function Viewer({ session }: { session: any }) {
       return;
     }
 
+    // --- Insert voxel ---
     const voxelData = {
       lat: origin.lat - localPos.z / METERS_PER_DEGREE,
       lon: origin.lng + localPos.x / lonScale,
@@ -157,10 +164,10 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(ghost);
     ghostRef.current = ghost;
 
+    // Controller
     const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', () => {
-      if (!isInteractingWithUIRef.current) setIsDrafting(true);
-    });
+    const triggerDrafting = () => { if (!isInteractingWithUIRef.current) setIsDrafting(true); };
+    controller.addEventListener('select', triggerDrafting);
     sceneRef.current.add(controller);
 
     const overlay = document.getElementById('ar-overlay');
@@ -168,8 +175,7 @@ export default function Viewer({ session }: { session: any }) {
     overlay?.addEventListener('touchstart', handleTouch);
 
     renderer.setAnimationLoop(() => {
-      // Use Ref here so location updates don't kill the loop
-      if (!isDraftingRef.current && geoConstantsRef.current && originGps.current) {
+      if (!isDraftingRef.current && geoConstants && originGps.current) {
         const worldTarget = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
         const localTarget = sceneRef.current.worldToLocal(worldTarget.clone());
         ghostRef.current?.position.set(
@@ -193,26 +199,28 @@ export default function Viewer({ session }: { session: any }) {
       sceneRef.current.remove(ghost, light, controller);
       renderer.setAnimationLoop(null);
       renderer.dispose();
-      sceneRef.current.remove(ghost, light, controller);
       if (document.body.contains(button)) document.body.removeChild(button);
     };
-  }, [!!session]); // Only restart if session status changes
+  }, [!!session, !!geoConstants]);
 
-  // --- Data Subscription ---
+  // --- Data sync ---
   useEffect(() => {
     if (position.lat === 0 || !session) return;
+
     const loadAndListen = async () => {
       const { data } = await supabase.from('voxels').select('*')
         .gte('lat', position.lat - DEGREE_THRESHOLD)
-        .lte('lat', position.lat + DEGREE_THRESHOLD);
-      
+        .lte('lat', position.lat + DEGREE_THRESHOLD)
+        .gte('lon', position.lng - DEGREE_THRESHOLD)
+        .lte('lon', position.lng + DEGREE_THRESHOLD);
       if (data) data.forEach(v => addVoxelLocally(v));
 
       const channel = supabase.channel('voxels_realtime')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new))
-        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
-          const mesh = voxelsMap.current.get(p.old.id);
-          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(p.old.id); }
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, payload => addVoxelLocally(payload.new))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, payload => {
+          const id = payload.old.id;
+          const mesh = voxelsMap.current.get(id);
+          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete(id); }
         })
         .subscribe();
 
@@ -226,14 +234,14 @@ export default function Viewer({ session }: { session: any }) {
     <>
       <div 
         id="ar-overlay" 
-        className="fixed inset-0 pointer-events-none z-[9999]">
-        <div 
-          className="pointer-events-auto"
-          onPointerDown={() => { isInteractingWithUIRef.current = true; }} 
-          onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
-        >
-          <MainMenu session={session} rendererRef={rendererRef} />
-        </div>
+        className="fixed inset-0 pointer-events-none z-[9999]"
+        onPointerDown={() => { isInteractingWithUIRef.current = true; }}
+        onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
+      >
+        <MainMenu 
+          session={session}
+          rendererRef={rendererRef}
+        />
 
         <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
@@ -243,6 +251,7 @@ export default function Viewer({ session }: { session: any }) {
           )}
         </div>
       </div>
+
       <div ref={mountRef} className="fixed inset-0" />
     </>
   );
