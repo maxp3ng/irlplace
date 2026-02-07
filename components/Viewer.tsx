@@ -32,10 +32,9 @@ export default function Viewer() {
   const originGps = useRef<{ lat: number, lng: number } | null>(null);
   const latestPos = useRef({ lat: 0, lng: 0 });
 
-  // --- REFS FOR PERSISTENCE & LOCKS ---
   const selectedColorRef = useRef(COLORS[0]);
   const sessionRef = useRef<any>(null);
-  const isInteractingWithUI = useRef(false); // The lock to prevent accidental placement
+  const isInteractingWithUI = useRef(false);
 
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [session, setSession] = useState<any>(null);
@@ -43,7 +42,6 @@ export default function Viewer() {
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
-  // Sync state to Ref and update Ghost Cube color preview
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) {
@@ -67,6 +65,8 @@ export default function Viewer() {
       new THREE.BoxGeometry(0.1, 0.1, 0.1),
       new THREE.MeshPhongMaterial({ color: voxel.color })
     );
+    
+    // Position is set relative to the scene's local (0,0,0)
     mesh.position.set(
       (voxel.lon - origin.lng) * lonScale,
       voxel.alt,
@@ -79,83 +79,54 @@ export default function Viewer() {
   };
 
   // ---------------- GOOGLE SIGN-IN ----------------
-	// ---------------- GOOGLE SIGN-IN (STABLE VERSION) ----------------
-useEffect(() => {
-  let interval: number | null = null;
+  useEffect(() => {
+    let interval: number | null = null;
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    document.body.appendChild(script);
 
-  const script = document.createElement("script");
-  script.src = "https://accounts.google.com/gsi/client";
-  script.async = true;
-  document.body.appendChild(script);
+    const waitForGoogle = () => {
+      // @ts-ignore
+      if (!window.google?.accounts?.id) return;
+      if (interval) window.clearInterval(interval);
 
-  const waitForGoogle = () => {
-    // @ts-ignore
-    if (!window.google?.accounts?.id) return;
-
-    if (interval) window.clearInterval(interval);
-
-    // @ts-ignore
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CLIENT_ID,
-      use_fedcm_for_prompt: true,
-      callback: async (res: any) => {
-        try {
+      // @ts-ignore
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        use_fedcm_for_prompt: true,
+        callback: async (res: any) => {
           const { data, error } = await supabase.auth.signInWithIdToken({
             provider: "google",
             token: res.credential,
           });
           if (!error) setSession(data.session);
-        } catch (e) {
-          console.error("Supabase sign-in error:", e);
-        }
-      },
-    });
-
-    const render = () => {
-      const btn = document.getElementById("googleButton");
-      if (!btn) {
-        requestAnimationFrame(render);
-        return;
-      }
-
-      // clear previous content so it doesn't vanish randomly
-      btn.innerHTML = "";
-
-      // @ts-ignore
-      window.google.accounts.id.renderButton(btn, {
-        theme: "outline",
-        size: "large",
-        text: "signin_with",
-        shape: "rectangular",
-        width: 260,
+        },
       });
 
-      setAuthReady(true);
+      const render = () => {
+        const btn = document.getElementById("googleButton");
+        if (!btn) { requestAnimationFrame(render); return; }
+        btn.innerHTML = "";
+        // @ts-ignore
+        window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large", width: 260 });
+        setAuthReady(true);
+      };
+      render();
     };
 
-    render();
-  };
+    interval = window.setInterval(waitForGoogle, 120);
+    supabase.auth.getSession().then(({ data }) => { if (data.session) setSession(data.session); });
+    const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
 
-  // Poll until GIS is ready (MOST STABLE across devices)
-  interval = window.setInterval(waitForGoogle, 120);
+    return () => {
+      if (interval) window.clearInterval(interval);
+      authListener.subscription.unsubscribe();
+      script.remove();
+    };
+  }, []);
 
-  // Restore existing session if already logged in
-  supabase.auth.getSession().then(({ data }) => {
-    if (data.session) setSession(data.session);
-  });
-
-  const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => {
-    setSession(s);
-  });
-
-  return () => {
-    if (interval) window.clearInterval(interval);
-    listener.subscription.unsubscribe();
-    script.remove();
-  };
-}, []);
-
-  // ---------------- GEOLOCATION ----------------
+  // ---------------- GEOLOCATION & COMPASS ----------------
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(pos => {
       latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -206,7 +177,6 @@ useEffect(() => {
     const controller = renderer.xr.getController(0);
     
     const onSelect = async () => {
-      // SHIELD: Check if we are touching UI
       if (isInteractingWithUI.current) {
         setTimeout(() => { isInteractingWithUI.current = false; }, 100);
         return;
@@ -215,12 +185,12 @@ useEffect(() => {
       const currentSession = sessionRef.current;
       if (!ghostRef.current || !currentSession) return;
 
-      const worldPos = new THREE.Vector3();
-      ghostRef.current.getWorldPosition(worldPos);
+      // FIX: Use the already snapped LOCAL position
+      const localPos = ghostRef.current.position;
 
       let existingVoxelId: string | null = null;
       voxelsMap.current.forEach((mesh, id) => {
-        if (mesh.position.distanceTo(ghostRef.current!.position) < 0.05 && (mesh as any).user_id === currentSession.user.id) {
+        if (mesh.position.distanceTo(localPos) < 0.05 && (mesh as any).user_id === currentSession.user.id) {
           existingVoxelId = id;
         }
       });
@@ -234,15 +204,13 @@ useEffect(() => {
         const origin = originGps.current!;
         const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
-        const { data } = await supabase.from('voxels').insert([{
-          lat: origin.lat - (worldPos.z / METERS_PER_DEGREE),
-          lon: origin.lng + (worldPos.x / lonScale),
-          alt: worldPos.y,
+        await supabase.from('voxels').insert([{
+          lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
+          lon: origin.lng + (localPos.x / lonScale),
+          alt: localPos.y,
           color: selectedColorRef.current.hex,
           user_id: currentSession.user.id
-        }]).select().single();
-
-        if (data) addVoxelLocally(data as Voxel);
+        }]);
       }
     };
 
@@ -251,12 +219,20 @@ useEffect(() => {
 
     renderer.setAnimationLoop(() => {
       camera.updateMatrixWorld();
+      
+      // 1. Project target into world space
       const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
+      
+      // 2. FIX: Transform to Scene Local Space before snapping
+      scene.worldToLocal(targetPos);
+
+      // 3. Snap and update ghost
       ghostRef.current?.position.set(
         Math.round(targetPos.x / VOXEL_SNAP) * VOXEL_SNAP,
         Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
         Math.round(targetPos.z / VOXEL_SNAP) * VOXEL_SNAP
       );
+      
       renderer.render(scene, camera);
     });
 
@@ -321,10 +297,8 @@ useEffect(() => {
         </div>
         
         <div
-          id="color picker" 
           className="absolute bottom-12 left-0 right-0 flex justify-center pointer-events-auto"
           onPointerDown={(e) => { e.stopPropagation(); isInteractingWithUI.current = true; }}
-          onKeyDown={(e) => {e.stopPropagation();}}
         >
           <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
         </div>
