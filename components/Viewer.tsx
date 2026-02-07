@@ -3,9 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
+import { supabase } from '@/utils/supabase';
+
+interface Voxel { id: string; lon: number|null; alt: number|null; lat: number|null; color: string; }
+
 
 export default function Viewer() {
   const mountRef = useRef<HTMLDivElement | null>(null);
+
+  const [step, setStep] = useState<'welcome' | 'permissions' | 'main'>('welcome');
+  const [voxels, setVoxels] = useState<Voxel[]>([]);
 
   // --- GPS state ---
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
@@ -24,6 +31,35 @@ export default function Viewer() {
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   }, []);
+  const confirmPlacement = async () => {
+      if(!position) return;
+      const newVoxel = { lon: position.lng, alt: 0, lat: position.lat, color: "FFFFFF" };
+      const { error } = await supabase.from('voxels').insert([newVoxel]);
+      // if (!error) setIsPlacing(false); // Let Realtime update the list
+    };
+  
+  const removeVoxel = async (id: string) => {
+      await supabase.from('voxels').delete().eq('id', id);
+    };
+  useEffect(() => {
+      if (step !== 'main') return;
+  
+      const channel = supabase
+        .channel('realtime_voxels')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, (p) => {
+          setVoxels((prev) => [...prev, p.new as Voxel]);
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, (p) => {
+          setVoxels((prev) => prev.filter(v => v.id !== p.old.id));
+        })
+        .subscribe();
+  
+      supabase.from('voxels').select('*').then(({ data }) => {
+        if (data) setVoxels(data);
+      });
+  
+      return () => { supabase.removeChannel(channel); };
+    }, [step]);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -62,7 +98,7 @@ export default function Viewer() {
     controller.addEventListener("select", () => {
       const material = new THREE.MeshPhongMaterial({ color: 0xffffff * Math.random() });
       const mesh = new THREE.Mesh(geometry, material);
-
+      confirmPlacement();
       // Spawn in front of controller
       mesh.position.set(0, 0, -0.3).applyMatrix4(controller.matrixWorld);
       mesh.quaternion.setFromRotationMatrix(controller.matrixWorld);
