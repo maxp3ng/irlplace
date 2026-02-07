@@ -74,12 +74,18 @@ export default function App() {
 
   if (step === 'welcome') return <WelcomeScreen onStart={() => setStep('permissions')} />;
   if (step === 'permissions') return <PermissionScreen status={permissionStatus} onGrant={requestPermissions} />;
+return (
+  // Use a Fragment (<>...</>) to wrap the two top-level divs
+  <>
+    {/* 1. The AR Background Layer */}
+    <div className="fixed inset-0 z-0">
+      <Viewer />
+    </div>
 
-  return (
-    <div className="relative h-screen w-full bg-black overflow-hidden select-none touch-none font-sans">
-      <div className="absolute inset-0">
-        {/* Imported Component */}
-        <Viewer/>
+    {/* 2. The UI Layer */}
+    <div className="relative z-10 h-screen w-full bg-transparent overflow-hidden select-none touch-none font-sans">
+      <div className="absolute inset-0 pointer-events-none">
+        {/* VoxelWorld should probably have pointer-events-auto if it's interactive */}
         <VoxelWorld 
           voxels={voxels}
           isPlacing={isPlacing}
@@ -89,34 +95,39 @@ export default function App() {
         />
       </div>
 
-      {/* Overlay UI */}
+      {/* Overlay UI (Top) */}
       <div className="absolute top-0 w-full pt-14 px-6 flex justify-between pointer-events-none">
         <div className="bg-black/60 backdrop-blur-xl px-4 py-2 rounded-full pointer-events-auto border border-white/10 flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span className="text-[10px] font-black text-white uppercase tracking-widest">Nodes Online: {voxels.length}</span>
+          <span className="text-[10px] font-black text-white uppercase tracking-widest">
+            Nodes Online: {voxels.length}
+          </span>
         </div>
       </div>
 
-      <div className="absolute bottom-0 w-full px-4 pb-10 space-y-4">
-        {isPlacing ? (
-          <PlacementControls 
-            pixelPos={pixelPos}
-            selectedColor={selectedColor}
-            onMove={movePixel}
-            onColorSelect={setSelectedColor}
-            onCancel={() => setIsPlacing(false)}
-            onConfirm={confirmPlacement}
-          />
-        ) : (
-          <button 
-            onClick={() => setIsPlacing(true)}
-            className="w-full py-5 bg-white text-black rounded-[2rem] font-black text-xl flex items-center justify-center gap-3 shadow-2xl active:scale-[0.98] transition-transform"
-          >
-            <Icons.Plus /> Place Voxel
-          </button>
-        )}
+      {/* Placement Controls (Bottom) */}
+      <div className="absolute bottom-0 w-full px-4 pb-10 space-y-4 pointer-events-none">
+        <div className="pointer-events-auto">
+          {isPlacing ? (
+            <PlacementControls 
+              pixelPos={pixelPos}
+              selectedColor={selectedColor}
+              onMove={movePixel}
+              onColorSelect={setSelectedColor}
+              onCancel={() => setIsPlacing(false)}
+              onConfirm={confirmPlacement}
+            />
+          ) : (
+            <button 
+              onClick={() => setIsPlacing(true)}
+              className="w-full py-5 bg-white text-black rounded-[2rem] font-black text-xl flex items-center justify-center gap-3 shadow-2xl active:scale-[0.98] transition-transform"
+            >
+              <Icons.Plus /> Place Voxel
+            </button>
+          )}
+        </div>
       </div>
     </div>
-  );
-
+  </>
+);
 }
