@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { ColorPicker, COLORS, PlacementControls } from '@/components/UIComponents';
-import LeaderboardMenu from '@/components/LeaderboardMenu';
+import MainMenu from '@/components/MainMenu';
 
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
@@ -218,8 +218,25 @@ export default function Viewer({ session }: { session: any }) {
           </button>
         </div>
 
-        <LeaderboardMenu session={session} />
-
+        <MainMenu 
+          session={session}
+          onCaptureScreenshot={() => {
+            if (!rendererRef.current) return;
+            // Hide UI temporarily
+            setShowUI(false);
+            requestAnimationFrame(() => {
+              const canvas = rendererRef.current.domElement;
+              canvas.toBlob(async blob => {
+                if (!blob) return;
+                const fileName = `screenshot-${Date.now()}.png`;
+                await supabase.storage.from('gallery').upload(fileName, blob);
+                const publicUrl = supabase.storage.from('gallery').getPublicUrl(fileName).data.publicUrl;
+                await supabase.from('gallery').insert([{ user_id: session.user.id, image_url: publicUrl }]);
+                setShowUI(true);
+              });
+            });
+          }}
+        />
         <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
           {isDrafting ? (
             <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
