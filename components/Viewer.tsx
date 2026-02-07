@@ -1,19 +1,18 @@
 'use client'
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import { supabase } from '@/utils/supabase';
 import { ARButton } from "three/addons/webxr/ARButton.js";
 import { ColorPicker, COLORS } from '@/components/UIComponents';
 
-/**
- * CONSTANTS
- * Standardizing these values is critical for grid alignment.
- */
-const GRID_SIZE = 0.001;
 const METERS_PER_DEGREE = 111111;
 const VOXEL_SNAP = 0.1;
 const Z_OFFSET = -1.2;
+const VIEW_RADIUS_METERS = 50;
+// Roughly 50m in degrees
+const DEGREE_THRESHOLD = VIEW_RADIUS_METERS / METERS_PER_DEGREE; 
+
 const GOOGLE_CLIENT_ID = "793044353905-r0ahk1kn0ps2mu5vqgf7m47t6dm43eb3.apps.googleusercontent.com";
 
 interface Voxel {
@@ -26,7 +25,6 @@ interface Voxel {
 }
 
 export default function Viewer() {
-  // --- REFS ---
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef(new THREE.Scene());
   const voxelsMap = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -38,13 +36,22 @@ export default function Viewer() {
   const sessionRef = useRef<any>(null);
   const isInteractingWithUI = useRef(false);
 
-  // --- STATE ---
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [session, setSession] = useState<any>(null);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
-  // Sync state to Ref and update Ghost Cube color preview
+  // Optimization: Pre-calculate lonScale only when origin changes
+  const geoConstants = useMemo(() => {
+    if (!position.lat) return null;
+    const lonScale = METERS_PER_DEGREE * Math.cos(position.lat * Math.PI / 180);
+    return {
+      lonScale,
+      latRatio: METERS_PER_DEGREE / VOXEL_SNAP,
+      lonRatio: lonScale / VOXEL_SNAP
+    };
+  }, [!!position.lat]); // Only re-run if we get a valid lock
+
   useEffect(() => {
     selectedColorRef.current = selectedColor;
     if (ghostRef.current) {
@@ -54,14 +61,15 @@ export default function Viewer() {
 
   useEffect(() => { sessionRef.current = session; }, [session]);
 
-  const getGlobalOrigin = (lat: number, lng: number) => ({
-    lat: Math.floor(lat / GRID_SIZE) * GRID_SIZE,
-    lng: Math.floor(lng / GRID_SIZE) * GRID_SIZE,
-  });
-
   const addVoxelLocally = (voxel: Voxel) => {
     if (voxelsMap.current.has(voxel.id)) return;
-    const origin = originGps.current || getGlobalOrigin(latestPos.current.lat, latestPos.current.lng);
+    
+    // Check if within radius locally as well to keep scene lightweight
+    const distLat = Math.abs(voxel.lat - latestPos.current.lat);
+    const distLon = Math.abs(voxel.lon - latestPos.current.lng);
+    if (distLat > DEGREE_THRESHOLD || distLon > DEGREE_THRESHOLD) return;
+
+    const origin = originGps.current!;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
     const mesh = new THREE.Mesh(
@@ -69,7 +77,6 @@ export default function Viewer() {
       new THREE.MeshPhongMaterial({ color: voxel.color })
     );
     
-    // Position rendering
     mesh.position.set(
       (voxel.lon - origin.lng) * lonScale,
       voxel.alt,
@@ -81,7 +88,7 @@ export default function Viewer() {
     voxelsMap.current.set(voxel.id, mesh);
   };
 
-  // ---------------- AUTH: GOOGLE SIGN-IN ----------------
+  // ---------------- AUTH ----------------
   useEffect(() => {
     let interval: number | null = null;
     const script = document.createElement("script");
@@ -93,11 +100,9 @@ export default function Viewer() {
       // @ts-ignore
       if (!window.google?.accounts?.id) return;
       if (interval) window.clearInterval(interval);
-
       // @ts-ignore
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
-        use_fedcm_for_prompt: true,
         callback: async (res: any) => {
           const { data, error } = await supabase.auth.signInWithIdToken({
             provider: "google",
@@ -106,7 +111,6 @@ export default function Viewer() {
           if (!error) setSession(data.session);
         },
       });
-
       const render = () => {
         const btn = document.getElementById("googleButton");
         if (!btn) { requestAnimationFrame(render); return; }
@@ -116,11 +120,9 @@ export default function Viewer() {
       };
       render();
     };
-
     interval = window.setInterval(waitForGoogle, 120);
     supabase.auth.getSession().then(({ data }) => { if (data.session) setSession(data.session); });
     const { data: authListener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-
     return () => {
       if (interval) window.clearInterval(interval);
       authListener.subscription.unsubscribe();
@@ -128,7 +130,7 @@ export default function Viewer() {
     };
   }, []);
 
-  // ---------------- SENSORS: GEOLOCATION & COMPASS ----------------
+  // ---------------- SENSORS ----------------
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(pos => {
       latestPos.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -167,31 +169,22 @@ export default function Viewer() {
 
     const ghost = new THREE.Mesh(
       new THREE.BoxGeometry(VOXEL_SNAP, VOXEL_SNAP, VOXEL_SNAP),
-      new THREE.MeshPhongMaterial({ 
-        color: selectedColorRef.current.hex, 
-        transparent: true, 
-        opacity: 0.5 
-      })
+      new THREE.MeshPhongMaterial({ color: selectedColorRef.current.hex, transparent: true, opacity: 0.5 })
     );
     scene.add(ghost);
     ghostRef.current = ghost;
 
-    const controller = renderer.xr.getController(0);
-    
     const onSelect = async () => {
       if (isInteractingWithUI.current) {
         setTimeout(() => { isInteractingWithUI.current = false; }, 100);
         return;
       }
-
       const currentSession = sessionRef.current;
       if (!ghostRef.current || !currentSession || !originGps.current) return;
 
       const localPos = ghostRef.current.position;
-
       let existingVoxelId: string | null = null;
       voxelsMap.current.forEach((mesh, id) => {
-        // Tight tolerance since both are snapped via the same GPS logic
         if (mesh.position.distanceTo(localPos) < 0.01 && (mesh as any).user_id === currentSession.user.id) {
           existingVoxelId = id;
         }
@@ -205,87 +198,94 @@ export default function Viewer() {
       } else {
         const origin = originGps.current;
         const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
-
-        await supabase.from('voxels').insert([{
+        
+        // Optimistic add
+        const tempId = Math.random().toString();
+        const voxelData = {
+          id: tempId,
           lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (localPos.x / lonScale),
           alt: localPos.y,
           color: selectedColorRef.current.hex,
           user_id: currentSession.user.id
-        }]);
+        };
+        addVoxelLocally(voxelData);
+
+        await supabase.from('voxels').insert([voxelData]);
       }
     };
 
+    const controller = renderer.xr.getController(0);
     controller.addEventListener('select', onSelect);
     scene.add(controller);
 
     renderer.setAnimationLoop(() => {
+      if (!geoConstants || !originGps.current) {
+        renderer.render(scene, camera);
+        return;
+      }
+
       camera.updateMatrixWorld();
-      
       const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
       scene.worldToLocal(targetPos);
 
-      if (originGps.current) {
-        const origin = originGps.current;
-        const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
+      // Optimized snap using pre-calculated ratios
+      const { lonScale, latRatio, lonRatio } = geoConstants;
+      const snapLat = Math.round((-targetPos.z / METERS_PER_DEGREE) * latRatio) / latRatio;
+      const snapLon = Math.round((targetPos.x / lonScale) * lonRatio) / lonRatio;
 
-        // 1. Convert local meters back to GPS deltas
-        const deltaLat = -targetPos.z / METERS_PER_DEGREE;
-        const deltaLon = targetPos.x / lonScale;
-
-        // 2. Snap the GPS deltas using the ratio of degrees-per-snap-unit
-        // This ensures the ghost grid is logically identical to the storage grid
-        const snapLat = Math.round(deltaLat * (METERS_PER_DEGREE / VOXEL_SNAP)) / (METERS_PER_DEGREE / VOXEL_SNAP);
-        const snapLon = Math.round(deltaLon * (lonScale / VOXEL_SNAP)) / (lonScale / VOXEL_SNAP);
-
-        // 3. Project back to local meters for the ghost mesh
-        ghostRef.current?.position.set(
-          snapLon * lonScale,
-          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          -snapLat * METERS_PER_DEGREE
-        );
-      } else {
-        // Fallback simple snap
-        ghostRef.current?.position.set(
-          Math.round(targetPos.x / VOXEL_SNAP) * VOXEL_SNAP,
-          Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          Math.round(targetPos.z / VOXEL_SNAP) * VOXEL_SNAP
-        );
-      }
+      ghostRef.current?.position.set(
+        snapLon * lonScale,
+        Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
+        -snapLat * METERS_PER_DEGREE
+      );
       
       renderer.render(scene, camera);
     });
 
     const overlay = document.getElementById('ar-overlay');
     const button = ARButton.createButton(renderer, { 
-        requiredFeatures: ['local-floor'],
-        optionalFeatures: ['dom-overlay'],
-        domOverlay: { root: overlay! }
+      requiredFeatures: ['local-floor'], 
+      optionalFeatures: ['dom-overlay'], 
+      domOverlay: { root: overlay! } 
     });
     document.body.appendChild(button);
 
     return () => { 
-        controller.removeEventListener('select', onSelect);
-        renderer.setAnimationLoop(null);
-        renderer.dispose(); 
-        if (document.body.contains(button)) document.body.removeChild(button); 
+      controller.removeEventListener('select', onSelect);
+      renderer.setAnimationLoop(null);
+      renderer.dispose(); 
+      if (document.body.contains(button)) document.body.removeChild(button); 
     };
-  }, [session]);
+  }, [session, !!geoConstants]);
 
-  // ---------------- DATA: REALTIME VOXELS ----------------
+  // ---------------- DATA RADIUS FILTERING ----------------
   useEffect(() => {
     if (position.lat === 0 || !session) return;
-    const fetchInitial = async () => {
-      const { data } = await supabase.from('voxels').select('*');
+
+    const fetchRadiusVoxels = async () => {
+      // Spatial bounding box query
+      const { data } = await supabase
+        .from('voxels')
+        .select('*')
+        .gte('lat', position.lat - DEGREE_THRESHOLD)
+        .lte('lat', position.lat + DEGREE_THRESHOLD)
+        .gte('lon', position.lng - DEGREE_THRESHOLD)
+        .lte('lon', position.lng + DEGREE_THRESHOLD);
+
       if (data) data.forEach((v: Voxel) => addVoxelLocally(v));
     };
+
     const channel = supabase.channel('voxels_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => addVoxelLocally(p.new as Voxel))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'voxels' }, p => {
+        addVoxelLocally(p.new as Voxel);
+      })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'voxels' }, p => {
-          const mesh = voxelsMap.current.get((p.old as any).id);
-          if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete((p.old as any).id); }
+        const mesh = voxelsMap.current.get((p.old as any).id);
+        if (mesh) { sceneRef.current.remove(mesh); voxelsMap.current.delete((p.old as any).id); }
       }).subscribe();
-    fetchInitial();
+
+    fetchRadiusVoxels();
     return () => { supabase.removeChannel(channel); };
   }, [position.lat, session]);
 
@@ -305,12 +305,12 @@ export default function Viewer() {
         onPointerDown={() => { isInteractingWithUI.current = true; }}
       >
         <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
-          <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 font-mono shadow-2xl">
+          <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 font-mono">
             {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
           </div>
           <button 
             onClick={(e) => { e.stopPropagation(); requestCompass(); }}
-            className={`px-4 py-2 rounded-full text-[10px] font-bold shadow-xl border transition-all ${
+            className={`px-4 py-2 rounded-full text-[10px] font-bold shadow-xl border ${
               aligned ? "bg-green-500/20 border-green-500/50 text-green-400" : "bg-white text-black border-white"
             }`}
           >
