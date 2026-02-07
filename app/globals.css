@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-/* 1. Reset & Base Styles */
 :root {
   --background: #000000;
   --foreground: #ffffff;
@@ -10,20 +9,20 @@ body {
   background: var(--background);
   color: var(--foreground);
   margin: 0;
-  overflow: hidden; /* Critical for AR stability */
+  overflow: hidden;
 }
 
-/* 2. AR Overlay Logic */
-/* Default: Hide it */
+/* 1. Default State */
 #ar-overlay {
   display: none;
 }
 
-/* AR Active: Use the correct pseudo-class for v4 compatibility.
-   We use :where() to ensure the linter doesn't crash if :xr-overlay 
-   isn't supported by the current browser environment.
+/* 2. WebXR State 
+   We wrap the pseudo-class in :where() to suppress the parser error.
+   If :where(:xr-overlay) still fails, we use a custom attribute approach.
 */
-:where(:xr-overlay) #ar-overlay {
+:where(:xr-overlay) #ar-overlay, 
+[data-xr-active="true"] #ar-overlay {
   display: block !important;
   position: fixed;
   inset: 0;
@@ -33,8 +32,7 @@ body {
   pointer-events: none;
 }
 
-/* 3. Utility Classes */
-/* In v4, we define these as standard CSS classes */
+/* 3. Standard Utilities */
 .pointer-events-auto {
   pointer-events: auto !important;
 }

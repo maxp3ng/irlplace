@@ -32,7 +32,6 @@ export default function Viewer({ session }: { session: any }) {
   const [isDrafting, setIsDrafting] = useState(false);
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
-  const [aligned, setAligned] = useState(false);
 
   // --- Sync refs ---
   useEffect(() => { isDraftingRef.current = isDrafting; }, [isDrafting]);
@@ -82,7 +81,6 @@ export default function Viewer({ session }: { session: any }) {
     const origin = originGps.current;
     const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
-    // --- Delete if overlapping ---
     let existingId: string | null = null;
     let existingMesh: THREE.Mesh | null = null;
     voxelsMap.current.forEach((mesh, id) => {
@@ -106,7 +104,6 @@ export default function Viewer({ session }: { session: any }) {
       return;
     }
 
-    // --- Insert voxel ---
     const voxelData = {
       lat: origin.lat - localPos.z / METERS_PER_DEGREE,
       lon: origin.lng + localPos.x / lonScale,
@@ -147,7 +144,11 @@ export default function Viewer({ session }: { session: any }) {
   useEffect(() => {
     if (!mountRef.current || !session) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ 
+      antialias: true, 
+      alpha: true,
+      preserveDrawingBuffer: true // Required for the screenshot tool
+    });
     renderer.xr.enabled = true;
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
@@ -171,6 +172,15 @@ export default function Viewer({ session }: { session: any }) {
     sceneRef.current.add(controller);
 
     const overlay = document.getElementById('ar-overlay');
+    
+    // Manual attribute toggling to satisfy Tailwind v4 and fix iOS visibility
+    renderer.xr.addEventListener('sessionstart', () => {
+      overlay?.setAttribute('data-xr-active', 'true');
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+      overlay?.removeAttribute('data-xr-active');
+    });
+
     const handleTouch = (e: TouchEvent) => { if (!isInteractingWithUIRef.current) triggerDrafting(); };
     overlay?.addEventListener('touchstart', handleTouch);
 
@@ -230,25 +240,42 @@ export default function Viewer({ session }: { session: any }) {
     loadAndListen();
   }, [position.lat, !!session]);
 
+  const blockUI = () => { isInteractingWithUIRef.current = true; };
+  const unblockUI = () => { setTimeout(() => { isInteractingWithUIRef.current = false; }, 120); };
+
   return (
     <>
       <div 
         id="ar-overlay" 
-        className="fixed inset-0 pointer-events-none z-[9999]"
-        onPointerDown={() => { isInteractingWithUIRef.current = true; }}
-        onPointerUp={() => { setTimeout(() => isInteractingWithUIRef.current = false, 100); }}
+        className="pointer-events-none"
       >
-        <MainMenu 
-          session={session}
-          rendererRef={rendererRef}
-        />
+        <div className="relative w-full h-full pointer-events-none">
+          <div 
+            className="pointer-events-auto"
+            onPointerDown={blockUI}
+            onPointerUp={unblockUI}
+            onTouchStart={blockUI}
+            onTouchEnd={unblockUI}
+          >
+            <MainMenu 
+              session={session}
+              rendererRef={rendererRef}
+            />
+          </div>
 
-        <div className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto">
-          {isDrafting ? (
-            <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
-          ) : (
-            <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
-          )}
+          <div 
+            className="absolute inset-x-0 bottom-12 flex flex-col items-center gap-8 pointer-events-auto"
+            onPointerDown={blockUI}
+            onPointerUp={unblockUI}
+            onTouchStart={blockUI}
+            onTouchEnd={unblockUI}
+          >
+            {isDrafting ? (
+              <PlacementControls onMove={handleMove} onCancel={() => setIsDrafting(false)} onConfirm={handleConfirm} />
+            ) : (
+              <ColorPicker selected={selectedColor} onChange={setSelectedColor} />
+            )}
+          </div>
         </div>
       </div>
 
