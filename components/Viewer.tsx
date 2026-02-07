@@ -8,7 +8,7 @@ import { ColorPicker, COLORS } from '@/components/UIComponents';
 
 /**
  * CONSTANTS
- * VOXEL_SNAP and BoxGeometry must match exactly (0.1m = 10cm)
+ * Standardizing these values is critical for grid alignment.
  */
 const GRID_SIZE = 0.001;
 const METERS_PER_DEGREE = 111111;
@@ -41,7 +41,6 @@ export default function Viewer() {
   // --- STATE ---
   const [selectedColor, setSelectedColor] = useState(COLORS[0]);
   const [session, setSession] = useState<any>(null);
-  const [authReady, setAuthReady] = useState(false);
   const [position, setPosition] = useState({ lat: 0, lng: 0 });
   const [aligned, setAligned] = useState(false);
 
@@ -70,7 +69,7 @@ export default function Viewer() {
       new THREE.MeshPhongMaterial({ color: voxel.color })
     );
     
-    // Position calculation must match the placement logic exactly
+    // Position rendering
     mesh.position.set(
       (voxel.lon - origin.lng) * lonScale,
       voxel.alt,
@@ -114,7 +113,6 @@ export default function Viewer() {
         btn.innerHTML = "";
         // @ts-ignore
         window.google.accounts.id.renderButton(btn, { theme: "outline", size: "large", width: 260 });
-        setAuthReady(true);
       };
       render();
     };
@@ -181,7 +179,6 @@ export default function Viewer() {
     const controller = renderer.xr.getController(0);
     
     const onSelect = async () => {
-      // Shield check for UI interaction
       if (isInteractingWithUI.current) {
         setTimeout(() => { isInteractingWithUI.current = false; }, 100);
         return;
@@ -190,11 +187,11 @@ export default function Viewer() {
       const currentSession = sessionRef.current;
       if (!ghostRef.current || !currentSession || !originGps.current) return;
 
-      // Use the LOCAL position (which is already snapped in the animation loop)
       const localPos = ghostRef.current.position;
 
       let existingVoxelId: string | null = null;
       voxelsMap.current.forEach((mesh, id) => {
+        // Tight tolerance since both are snapped via the same GPS logic
         if (mesh.position.distanceTo(localPos) < 0.01 && (mesh as any).user_id === currentSession.user.id) {
           existingVoxelId = id;
         }
@@ -209,7 +206,6 @@ export default function Viewer() {
         const origin = originGps.current;
         const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
-        // Convert local position back to global GPS coordinates for DB storage
         await supabase.from('voxels').insert([{
           lat: origin.lat - (localPos.z / METERS_PER_DEGREE),
           lon: origin.lng + (localPos.x / lonScale),
@@ -226,31 +222,30 @@ export default function Viewer() {
     renderer.setAnimationLoop(() => {
       camera.updateMatrixWorld();
       
-      // 1. Project target from camera into world
       const targetPos = new THREE.Vector3(0, 0, Z_OFFSET).applyMatrix4(camera.matrixWorld);
-      
-      // 2. Transform to local scene space (critical for compass alignment)
       scene.worldToLocal(targetPos);
 
       if (originGps.current) {
         const origin = originGps.current;
         const lonScale = METERS_PER_DEGREE * Math.cos(origin.lat * Math.PI / 180);
 
-        /**
-         * 3. THE PHASE OFFSET FIX:
-         * We calculate how much the GPS origin is offset from a clean 0.1m grid.
-         * This ensures the ghost cube snaps to the SAME lines as placed voxels.
-         */
-        const offsetX = ((origin.lng * lonScale) % VOXEL_SNAP);
-        const offsetZ = ((origin.lat * METERS_PER_DEGREE) % VOXEL_SNAP);
+        // 1. Convert local meters back to GPS deltas
+        const deltaLat = -targetPos.z / METERS_PER_DEGREE;
+        const deltaLon = targetPos.x / lonScale;
 
+        // 2. Snap the GPS deltas using the ratio of degrees-per-snap-unit
+        // This ensures the ghost grid is logically identical to the storage grid
+        const snapLat = Math.round(deltaLat * (METERS_PER_DEGREE / VOXEL_SNAP)) / (METERS_PER_DEGREE / VOXEL_SNAP);
+        const snapLon = Math.round(deltaLon * (lonScale / VOXEL_SNAP)) / (lonScale / VOXEL_SNAP);
+
+        // 3. Project back to local meters for the ghost mesh
         ghostRef.current?.position.set(
-          Math.round((targetPos.x - offsetX) / VOXEL_SNAP) * VOXEL_SNAP + offsetX,
+          snapLon * lonScale,
           Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
-          Math.round((targetPos.z + offsetZ) / VOXEL_SNAP) * VOXEL_SNAP - offsetZ
+          -snapLat * METERS_PER_DEGREE
         );
       } else {
-        // Fallback snapping if GPS origin isn't locked yet
+        // Fallback simple snap
         ghostRef.current?.position.set(
           Math.round(targetPos.x / VOXEL_SNAP) * VOXEL_SNAP,
           Math.round(targetPos.y / VOXEL_SNAP) * VOXEL_SNAP,
@@ -297,7 +292,7 @@ export default function Viewer() {
   if (!session) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-black z-[10000]">
-        <div id="googleButton" className="transition-all hover:scale-105" />
+        <div id="googleButton" />
       </div>
     );
   }
@@ -309,25 +304,20 @@ export default function Viewer() {
         className="fixed inset-0 pointer-events-none z-[9999]"
         onPointerDown={() => { isInteractingWithUI.current = true; }}
       >
-        {/* HUD Top Left */}
         <div className="fixed top-6 left-6 flex flex-col gap-3 pointer-events-auto">
-          <div className="bg-black/40 backdrop-blur-xl px-4 py-2 text-white/90 text-[10px] font-mono rounded-full border border-white/10 shadow-2xl">
-            <span className="text-green-400 mr-2">●</span>
+          <div className="bg-black/60 backdrop-blur-md px-4 py-2 text-white text-[10px] rounded-full border border-white/10 font-mono shadow-2xl">
             {position.lat.toFixed(6)}, {position.lng.toFixed(6)}
           </div>
           <button 
             onClick={(e) => { e.stopPropagation(); requestCompass(); }}
-            className={`px-4 py-2 rounded-full text-[10px] font-bold transition-all shadow-xl border ${
-              aligned 
-                ? "bg-green-500/20 border-green-500/50 text-green-400" 
-                : "bg-white text-black border-white animate-pulse"
+            className={`px-4 py-2 rounded-full text-[10px] font-bold shadow-xl border transition-all ${
+              aligned ? "bg-green-500/20 border-green-500/50 text-green-400" : "bg-white text-black border-white"
             }`}
           >
             {aligned ? "NORTH LOCKED 🧭" : "ALIGN COMPASS"}
           </button>
         </div>
         
-        {/* Color Picker Container */}
         <div
           className="absolute inset-0 pointer-events-none flex items-end justify-center pb-12"
           onPointerDown={(e) => { e.stopPropagation(); isInteractingWithUI.current = true; }}
