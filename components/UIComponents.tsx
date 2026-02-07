@@ -19,9 +19,10 @@ export const ColorPicker = ({ selected, onChange }: { selected: any, onChange: (
   const [showCustom, setShowCustom] = useState(false);
 
   return (
-    <div className="fixed right-6 bottom-40 z-[10001] flex items-end flex-col gap-3">
+    <div className="fixed right-6 bottom-40 z-50 flex items-center flex-col-reverse gap-3">
       {/* 1. Custom Picker Popover */}
       {isOpen && showCustom && (
+        <div className="absolute right-full top-/2 -translate-y-1/2 mr-4 z-50">
         <div className="bg-black/80 backdrop-blur-xl p-4 rounded-2xl border border-white/20 shadow-2xl mb-2 animate-in fade-in zoom-in duration-200 origin-bottom">
           <HexColorPicker color={selected.hex} onChange={(hex) => onChange({ name: 'Custom', hex })} />
           <div className="mt-3 flex items-center gap-2">
@@ -31,11 +32,12 @@ export const ColorPicker = ({ selected, onChange }: { selected: any, onChange: (
               onChange={(e) => onChange({ name: 'Custom', hex: e.target.value })}
               className="bg-white/10 border border-white/20 rounded px-2 py-1 text-white text-sm font-mono w-full uppercase"
             />
+                </div>
           </div>
         </div>
       )}
 
-      <div className="flex items-center flex-row-reverse gap-3 max-w-[90vw]">
+      <div className="flex items-center flex-col-reverse gap-3 max-w-[90vw]">
         {/* 2. Main Trigger Button */}
         <button 
           onClick={() => { setIsOpen(!isOpen); if (isOpen) setShowCustom(false); }}
@@ -47,13 +49,15 @@ export const ColorPicker = ({ selected, onChange }: { selected: any, onChange: (
 
         {/* 3. SCROLLABLE TRAY */}
         <div 
-          className={`transition-all duration-300 ease-out origin-right overflow-hidden ${
-            isOpen ? 'w-auto opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-10 pointer-events-none'
+          //className={`transition-all duration-300 ease-out origin-right overflow-hidden ${
+           // isOpen ? 'w-auto opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-10 pointer-events-none'
+            className={`flex flex-col items-center gap-3 transition-all duration-300 ease-out origin-bottom ${
+              isOpen ? 'opacity-100 translate-y-0 scale-100 pointer-events-auto' : 'opacity-0 translate-y-4 scale-90 pointer-events-none'
           }`}
         >
           <div 
-            className="flex gap-2 bg-black/60 backdrop-blur-xl p-2 rounded-full border border-white/10 
-                       overflow-x-auto overflow-y-hidden no-scrollbar overscroll-contain touch-pan-x"
+            className="flex flex-col-reverse gap-2 bg-black/60 backdrop-blur-xl p-2 rounded-full border border-white/10 
+                       overflow-y-auto overflow-x-hidden no-scrollbar overscroll-contain touch-pan-y"
             style={{ 
               maxWidth: 'calc(100vw - 120px)', // Ensures it doesn't push off screen
               WebkitOverflowScrolling: 'touch' 
